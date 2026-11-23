@@ -117,7 +117,7 @@ def publish(repo, dry_run=False):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--repo", default="techreloaded-ar/TRTalks")
+    parser.add_argument("--repo", default="AgileReloaded/TRTalks")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
     try:

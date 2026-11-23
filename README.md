@@ -17,8 +17,8 @@ letto in Websmith. Servono macOS/Linux, Python 3.9+ e curl. Nessun pacchetto pip
 Node.js o Git è richiesto a chi installa. Codex va installato e autenticato a parte.
 
 La release comprende `setup.sh`, `trtalks.zip`, `SHA256SUMS`, `release.json` e
-una pagina di istruzioni `index.html`. Il repository o host di pubblicazione
-non è ancora configurato: non esiste un URL TRTalks verificato e funzionante.
+una pagina di istruzioni `index.html`. Il repository remoto scelto è
+`AgileReloaded/TRTalks`; la release installabile non è ancora pubblicata e verificata.
 La [pagina di installazione](docs/installazione.html) viene completata dal builder
 con l’URL effettivo, senza dover farlo digitare ai colleghi.
 
@@ -177,7 +177,7 @@ Pubblicazione dal Terminale del computer di sviluppo:
 python3 scripts/publish.py
 ```
 
-La destinazione predefinita è `techreloaded-ar/TRTalks`. Richiede Git e `gh`
+La destinazione predefinita è `AgileReloaded/TRTalks`. Richiede Git e `gh`
 autenticato con i permessi per creare/pubblicare il repository. Prima della
 pubblicazione esegue i test; non invia email. `--dry-run` costruisce solo gli
 asset e mostra il comando futuro di installazione senza usare Git o GitHub.

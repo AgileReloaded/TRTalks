@@ -2,10 +2,11 @@
 
 ## Destinazione di pubblicazione
 
-Il modello è una release di repository pubblico, come Websmith. Nessun repository
-TRTalks è stato creato o verificato e nessun URL è stato pubblicato. La rete di
-questa sessione non raggiunge GitHub. `techreloaded-ar/TRTalks` è una proposta
-coerente con l’organizzazione usata da Websmith, non un repository verificato esistente. È la destinazione predefinita del comando
+Il modello è una release di repository pubblico, come Websmith. L’utente ha
+creato su GitHub il repository pubblico `AgileReloaded/TRTalks` e ha configurato
+in Fork `origin` come `https://github.com/AgileReloaded/TRTalks.git`.
+La release installabile non è ancora pubblicata e verificata. La rete di
+questa sessione non raggiunge GitHub. `AgileReloaded/TRTalks` è la destinazione predefinita del comando
 `python3 scripts/publish.py`, predisposto per eseguire dal Terminale creazione
 del repository pubblico, commit dei sorgenti, push, tag e pubblicazione degli asset.
 La sessione corrente non ha eseguito tali operazioni remote.
