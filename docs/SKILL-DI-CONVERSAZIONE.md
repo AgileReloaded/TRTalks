@@ -11,7 +11,7 @@ Versione: **0.4.0a1**. TRTalks è l’applicazione; ogni tipologia di conversazi
 | --- | --- |
 | `conversations.json` | Catalogo delle skill: ID, nome, descrizione e lista dei file |
 | `skills/trstory/` | SKILL.md, metadati UI, domande, regole e template delle case histories |
-| `runtime/` | CLI, installazione, update, consegna SMTP e verifiche comuni |
+| `runtime/` | CLI, installazione, update, preparazione Gmail, ricevute e verifiche comuni |
 | `runtime/references/` | Contratto backend e istruzioni di invio comuni |
 | `scripts/` | Costruzione e pubblicazione dell’applicazione |
 
@@ -82,17 +82,18 @@ restano nella stessa posizione, senza rigenerare gli ID delle richieste.
 
 ## Verifiche e limiti
 
-Il runtime 0.4.0a1 usa SMTP locale con credenziali nel file di configurazione.
-Le skill usano la destinazione effettiva senza fissarla nel testo dell’intervista.
-`status` verifica TLS e autenticazione senza email; `probe` crea una bozza locale.
+Il runtime 0.5.0a1 prepara la consegna per `send_email` del connettore Gmail.
+Il collegamento Google è gestito dall’app; nessuna credenziale di posta resta
+nella configurazione TRTalks. Le skill leggono il destinatario effettivo.
+`status` mostra le preferenze senza rete; `get_profile` di Gmail verifica
+l’account; `probe` crea solo una bozza locale.
 
-I test coprono installazione, update, credenziali preservate, più skill, rollback,
-consegna MIME, rifiuti SMTP e blocco dei retry incerti. Il test SMTP TLS su
-loopback è predisposto senza invii esterni, ma è stato saltato in questa sessione
-perché l’ambiente vieta l’apertura del socket locale. Il precedente
-script autonomo è stato provato dall’utente con successo; il runtime completo
-richiede un distinto collaudo autorizzato per confermare l’invio esterno.
+I test coprono installazione, aggiornamento, migrazione delle preferenze,
+rimozione dei vecchi parametri di connessione, più skill, rollback,
+conservazione dei byte, autorizzazione e ricevute Gmail simulate.
+Una prova di invio reale richiede il documento e il destinatario autorizzati.
 
-Non è stato osservato il riconoscimento automatico della skill o il dialogo
-vocale nell’app effettiva. Le release remote devono essere pubblicate prima
-che gli aggiornamenti dei colleghi possano scaricarle.
+Il riconoscimento della skill e il dialogo vocale richiedono una prova
+nell’app effettiva. La disponibilità di Gmail e l’accessibilità degli allegati
+vanno verificate nell’ambiente utilizzato. Le release remote devono essere
+pubblicate prima che gli aggiornamenti dei colleghi possano scaricarle.

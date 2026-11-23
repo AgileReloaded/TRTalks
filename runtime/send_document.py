@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Deliver approved Markdown by local SMTP, retaining drafts and safe retry state."""
+"""Prepare an authorized Gmail call and retain the real connector receipt.
+
+The agent calls the ChatGPT connector. Local Python only prepares arguments;
+preparation is never reported as a sent email.
+"""
 import argparse
-import base64
-from email import policy
-from email.message import EmailMessage
-from email.utils import formataddr, formatdate
 import json
 from pathlib import Path
 import re
@@ -12,32 +12,20 @@ import sys
 import uuid
 
 from common import atomic_json, canonical, digest, email_address, load_config, locked, now, plain_path
-from delivery import DeliveryError, smtp_transport
+from delivery import GMAIL_TOOL, gmail_arguments, gmail_receipt
 
 
-def route(config):
-    # Passwords stay exclusively in config.local.json; not even their hash is stored.
-    return {key: config[key] for key in
-            ("smtp_host", "smtp_port", "smtp_username", "smtp_from", "recipient")}
-
-
-def status(root, transport=None):
+def status(root):
     config = load_config(root)
-    result = {"verified": False, "operation": "smtp-status", "transport": "smtp",
-              "smtp_host": config["smtp_host"], "smtp_port": config["smtp_port"],
-              "recipient": config["recipient"], "email_delivery": "not_requested"}
-    try:
-        receipt = (transport or smtp_transport)(config)
-        result.update(verified=receipt.get("authenticated") is True
-                      and receipt.get("smtp_code") == 250
-                      and receipt.get("email_sent") is False, receipt=receipt)
-    except DeliveryError as error:
-        result.update(error=str(error), smtp_code=error.code)
-    return result
+    return {"operation": "gmail-status", "transport": "gmail", "network_called": False,
+            "recipient": config["recipient"], "send_enabled": config["send_enabled"],
+            "gmail_connection_verified": False, "email_delivery": "not_requested",
+            "required_tool": GMAIL_TOOL,
+            "next_action": "L'agente verifica il tool Gmail; get_profile verifica l'account senza inviare email."}
 
 
 def validated_document(file, config, name=None, email=None):
-    file = plain_path(Path(file))
+    file = plain_path(Path(file).absolute())
     if not file.is_file():
         raise ValueError("La bozza deve essere un file regolare")
     with file.open("rb") as stream:
@@ -49,9 +37,9 @@ def validated_document(file, config, name=None, email=None):
         raise ValueError("Nome file non valido: usare lettere, numeri, _ o - e .md")
     name = config["sender_name"] if name is None else name
     email = config["reply_to"] if email is None else email
-    if (not isinstance(name, str) or not name.strip() or len(name.encode("utf-8")) > 200
+    if (not isinstance(name, str) or len(name.encode("utf-8")) > 200
             or re.search(r"[\x00-\x1f\x7f]", name)):
-        raise ValueError("Nome mittente obbligatorio e valido, massimo 200 byte UTF-8")
+        raise ValueError("Nome autore non valido")
     if not isinstance(email, str) or (email and not email_address(email)):
         raise ValueError("Reply-To non valido")
     return {"name": name, "email": email, "filename": file.name, "markdown": text}, digest(raw)
@@ -60,15 +48,14 @@ def validated_document(file, config, name=None, email=None):
 def dry_run(root, file, name=None, email=None):
     config = load_config(root)
     args, sha = validated_document(file, config, name, email)
-    return {"network_called": False, "email_delivery": "not_requested", "sha256": sha,
-            "bytes": len(args["markdown"].encode("utf-8")), "filename": args["filename"],
-            "recipient": config["recipient"], "smtp_from": config["smtp_from"],
-            "send_enabled": config["send_enabled"], "smtp_password_configured": bool(config["smtp_password"])}
+    return {"network_called": False, "email_delivery": "not_requested", "transport": "gmail",
+            "sha256": sha, "bytes": len(args["markdown"].encode("utf-8")),
+            "filename": args["filename"], "recipient": config["recipient"],
+            "send_enabled": config["send_enabled"], "required_tool": GMAIL_TOOL}
 
 
 def probe(root):
-    """Create a fixed synthetic draft locally. Never contacts any server."""
-    target = plain_path(Path(root) / "artifacts/prova-smtp.md")
+    target = plain_path(Path(root) / "artifacts/prova-gmail.md")
     raw = "# Prova TRTalks\n\nDocumento fittizio per verificare il formato.\n".encode("utf-8")
     target.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -81,125 +68,97 @@ def probe(root):
             "draft_path": str(target), "sha256": digest(raw), "bytes": len(raw)}
 
 
-def message_bytes(args, delivery_route, request_id, date):
-    message = EmailMessage(policy=policy.SMTP)
-    message["From"] = formataddr((args["name"], delivery_route["smtp_from"]))
-    message["To"] = delivery_route["recipient"]
-    if args["email"]:
-        message["Reply-To"] = args["email"]
-    message["Subject"] = "TRTalks — " + args["filename"]
-    message["Date"] = date
-    message["Message-ID"] = "<" + request_id + "@" + delivery_route["smtp_from"].split("@", 1)[1] + ">"
-    message["X-TRTalks-Request-ID"] = request_id
-    message.set_content("Resoconto TRTalks preparato da " + args["name"] + ".\n"
-                        "Il documento Markdown completo è allegato.\n")
-    # Base64 attachment retains the exact authorized UTF-8 bytes, including CRLF.
-    message.add_attachment(args["markdown"].encode("utf-8"), maintype="text", subtype="markdown",
-                           filename=args["filename"], cte="base64")
-    message.set_boundary("trtalks-" + request_id)
-    return message.as_bytes()
+def record_path(root, request_id):
+    if not re.fullmatch(r"trtalks-[a-f0-9]{32}", request_id):
+        raise ValueError("request_id non valido")
+    return plain_path(Path(root) / ".trtalks/deliveries" / (request_id + ".json"))
 
 
-def transmit(root, record_path, record, config, transport=None):
-    record["status"] = "pending"
-    record["last_attempt_at"] = now()
-    atomic_json(record_path, record)  # Crash from here onward requires review, never a new ID.
-    outcome = {"request_id": record["request_id"], "message_id": record["message_id"],
-               "smtp_accepted": None, "email_delivery": "unconfirmed", "cached": False,
-               "recipient": record["route"]["recipient"]}
-    try:
-        raw = base64.b64decode(record["message_base64"], validate=True)
-        envelope = {"from": record["route"]["smtp_from"], "to": record["route"]["recipient"]}
-        receipt = (transport or smtp_transport)(config, envelope, raw)
-        if (receipt.get("smtp_accepted") is not True or receipt.get("smtp_code") != 250
-                or receipt.get("recipient") != envelope["to"]):
-            raise DeliveryError("Ricevuta SMTP inattesa", uncertain=True)
-        record["status"] = "accepted"
-        outcome.update(smtp_accepted=True, receipt=receipt)
-    except DeliveryError as error:
-        record["status"] = "uncertain" if error.uncertain else "failed_safe"
-        outcome.update(smtp_accepted=None if error.uncertain else False,
-                       error=str(error), smtp_code=error.code,
-                       email_delivery="unconfirmed" if error.uncertain else "not_sent")
-    except (OSError, ValueError, TypeError, KeyError):
-        # Unexpected failures after entering a transport are ambiguous; no raw secrets in output.
-        record["status"] = "uncertain"
-        outcome["error"] = "Errore durante il tentativo SMTP; esito non determinato"
-    record.setdefault("attempts", []).append({"at": now(), "outcome": outcome})
-    record["outcome"] = outcome
-    try:
-        atomic_json(record_path, record)
-    except OSError:
-        return dict(outcome, local_status="pending", state_saved=False, state_file=str(record_path),
-                    state_error="Ricevuta non salvata: conservare questo esito e verificare manualmente; nessun reinvio")
-    return dict(outcome, local_status=record["status"], state_saved=True, state_file=str(record_path))
+def cached_result(record, path):
+    return dict(record["outcome"], cached=True, local_status="accepted", state_file=str(path),
+                network_called=False, next_action="Nessun nuovo invio: riusare la ricevuta salvata.")
 
 
-def send(root, file, approved_sha256, authorization, name=None, email=None, transport=None):
+def send(root, file, approved_sha256, authorization, name=None, email=None):
     root = Path(root).resolve()
     config = load_config(root)
     if not config["send_enabled"]:
         raise ValueError("Invio disabilitato nella configurazione locale")
     args, sha = validated_document(file, config, name, email)
-    if approved_sha256 != sha or not authorization or not authorization.strip():
+    if approved_sha256 != sha or not isinstance(authorization, str) or not authorization.strip():
         raise ValueError("Manca l'autorizzazione esplicita o la bozza differisce dalla versione autorizzata")
     with locked(root / ".trtalks/delivery.lock"):
         directory = plain_path(root / ".trtalks/deliveries")
         directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-        delivery_route = route(config)
-        fingerprint = digest(canonical({"route": delivery_route, "arguments": args}))
+        fingerprint = digest(canonical({"recipient": config["recipient"], "arguments": args}))
         for path in directory.glob("trtalks-*.json"):
             record = json.loads(plain_path(path).read_text(encoding="utf-8"))
             if record["document_sha256"] != sha:
                 continue
-            if record.get("transport") != "smtp":
-                raise ValueError("Documento già registrato nel precedente flusso HTTP: revisione manuale, nessun reinvio SMTP")
+            if record.get("transport") != "gmail":
+                raise ValueError("Documento registrato con un precedente trasporto: verificare manualmente; nessun reinvio Gmail")
             if record["fingerprint"] != fingerprint:
-                raise ValueError("Documento già registrato con altri metadati o destinatario: verificare prima di un altro invio")
+                raise ValueError("Documento registrato con altri metadati o destinatario: verificare prima di un altro invio")
             if record["status"] == "accepted":
-                return dict(record["outcome"], cached=True, local_status="accepted", state_file=str(path))
-            raise ValueError("Tentativo già registrato: usare retry con lo stesso request_id " + record["request_id"])
+                return cached_result(record, path)
+            raise ValueError("Tentativo già preparato o esito incerto: verificare Gmail, nessun reinvio automatico. ID: " + record["request_id"])
         request_id = "trtalks-" + uuid.uuid4().hex
-        date = formatdate(localtime=True)
-        raw = message_bytes(args, delivery_route, request_id, date)
-        record = {"schema": 2, "transport": "smtp", "created_at": now(), "request_id": request_id,
-                  "route": delivery_route, "document_sha256": sha, "fingerprint": fingerprint,
-                  "authorization": authorization, "draft_path": str(Path(file).resolve()),
-                  "arguments": args, "date": date, "message_id": "<" + request_id + "@" + delivery_route["smtp_from"].split("@", 1)[1] + ">",
-                  "message_base64": base64.b64encode(raw).decode("ascii"), "message_sha256": digest(raw),
-                  "status": "prepared", "attempts": []}
-        path = directory / (request_id + ".json")
+        # Keep exactly the authorized bytes if the original is edited later.
+        snapshot_dir = plain_path(directory / request_id)
+        snapshot_dir.mkdir(mode=0o700)
+        attachment = snapshot_dir / args["filename"]
+        with attachment.open("xb") as stream:
+            stream.write(args["markdown"].encode("utf-8"))
+        attachment.chmod(0o600)
+        tool_args = gmail_arguments(config["recipient"], attachment, args["filename"], args["name"], args["email"])
+        record = {"schema": 3, "transport": "gmail", "created_at": now(), "request_id": request_id,
+                  "recipient": config["recipient"], "document_sha256": sha, "fingerprint": fingerprint,
+                  "authorization": authorization, "draft_path": str(Path(file).absolute()),
+                  "attachment_path": str(attachment), "arguments": args, "gmail_arguments": tool_args,
+                  "status": "pending"}
+        path = record_path(root, request_id)
         atomic_json(path, record)
-        return transmit(root, path, record, config, transport)
+        return {"request_id": request_id, "transport": "gmail", "local_status": "pending",
+                "network_called": False, "email_sent": False, "email_delivery": "not_requested",
+                "cached": False, "state_file": str(path), "tool": GMAIL_TOOL, "tool_arguments": tool_args,
+                "next_action": "L'agente chiama adesso il tool Gmail e registra la risposta con record-result. Questo comando non ha inviato email."}
 
 
-def retry(root, request_id, transport=None):
-    if not re.fullmatch(r"trtalks-[a-f0-9]{32}", request_id):
-        raise ValueError("request_id non valido")
-    root = Path(root).resolve()
-    config = load_config(root)
-    if not config["send_enabled"]:
-        raise ValueError("Invio disabilitato")
-    with locked(root / ".trtalks/delivery.lock"):
-        path = plain_path(root / ".trtalks/deliveries" / (request_id + ".json"))
+def record_result(root, request_id, receipt_file):
+    with locked(Path(root) / ".trtalks/delivery.lock"):
+        path = record_path(root, request_id)
         record = json.loads(path.read_text(encoding="utf-8"))
-        if record.get("transport") != "smtp":
-            raise ValueError("Tentativo del precedente flusso HTTP: revisione manuale, nessun reinvio SMTP")
+        if record.get("transport") != "gmail" or record.get("request_id") != request_id:
+            raise ValueError("La ricevuta deve riferirsi a un tentativo Gmail dello stesso ID")
         if record["status"] == "accepted":
-            return dict(record["outcome"], cached=True, local_status="accepted", state_file=str(path))
-        if record["status"] != "failed_safe":
-            raise ValueError("Esito incerto o tentativo interrotto: SMTP non deduplica; reinvio bloccato, verificare manualmente")
-        if route(config) != record["route"]:
-            raise ValueError("Server, account, mittente o destinatario cambiati: ritentativo bloccato")
-        args = record["arguments"]
-        raw = base64.b64decode(record["message_base64"], validate=True)
-        if (record["request_id"] != request_id or not record.get("authorization")
-                or digest(args["markdown"].encode("utf-8")) != record["document_sha256"]
-                or digest(canonical({"route": record["route"], "arguments": args})) != record["fingerprint"]
-                or digest(raw) != record["message_sha256"]
-                or raw != message_bytes(args, record["route"], request_id, record["date"])):
-            raise ValueError("Stato del tentativo modificato: nessun reinvio")
-        return transmit(root, path, record, config, transport)
+            return cached_result(record, path)
+        if record["status"] not in ("pending", "uncertain"):
+            raise ValueError("Stato del tentativo inatteso")
+        raw_receipt = json.loads(plain_path(receipt_file).read_text(encoding="utf-8"))
+        record["connector_result"] = raw_receipt
+        record["updated_at"] = now()
+        try:
+            receipt = gmail_receipt(raw_receipt)
+            record["status"] = "accepted"
+            outcome = {"request_id": request_id, "gmail_accepted": True, "message_id": receipt["id"],
+                       "recipient": record["recipient"], "email_delivery": "unconfirmed", "cached": False}
+            record["receipt"] = receipt
+        except (ValueError, TypeError, KeyError):
+            record["status"] = "uncertain"
+            outcome = {"request_id": request_id, "gmail_accepted": False, "email_delivery": "unconfirmed",
+                       "error": "Gmail non ha confermato l'invio: verificare manualmente prima di un nuovo tentativo"}
+        record["outcome"] = outcome
+        atomic_json(path, record)
+        return dict(outcome, local_status=record["status"], state_file=str(path), network_called=False)
+
+
+def retry(root, request_id):
+    with locked(Path(root) / ".trtalks/delivery.lock"):
+        path = record_path(root, request_id)
+        record = json.loads(path.read_text(encoding="utf-8"))
+        if record.get("transport") == "gmail" and record["status"] == "accepted":
+            return cached_result(record, path)
+        raise ValueError("Reinvio automatico disabilitato: verificare l'esito nel servizio originale; nessuna email inviata")
 
 
 def main(argv=None):
@@ -217,6 +176,9 @@ def main(argv=None):
             part.add_argument("--approved-sha256", required=True)
             part.add_argument("--authorization", required=True)
     commands.add_parser("retry").add_argument("request_id")
+    receipt = commands.add_parser("record-result")
+    receipt.add_argument("request_id")
+    receipt.add_argument("--receipt", type=Path, required=True)
     args = parser.parse_args(argv)
     try:
         if args.command == "status":
@@ -227,14 +189,15 @@ def main(argv=None):
             result = dry_run(args.root, args.file, args.name, args.email)
         elif args.command == "send":
             result = send(args.root, args.file, args.approved_sha256, args.authorization, args.name, args.email)
+        elif args.command == "record-result":
+            result = record_result(args.root, args.request_id, args.receipt)
         else:
             result = retry(args.root, args.request_id)
         print(json.dumps(result, ensure_ascii=False, indent=2))
-        success = result.get("smtp_accepted", result.get("verified", result.get("network_called") is False))
-        return 0 if success and result.get("state_saved", True) else 1
+        return 1 if result.get("local_status") == "uncertain" else 0
     except (OSError, ValueError, KeyError, TypeError) as error:
-        delivery = "unconfirmed" if args.command in ("send", "retry") else "not_requested"
-        print(json.dumps({"ok": False, "error": str(error), "email_delivery": delivery}, ensure_ascii=False))
+        print(json.dumps({"ok": False, "error": str(error), "email_delivery": "unconfirmed"
+                          if args.command in ("send", "retry", "record-result") else "not_requested"}, ensure_ascii=False))
         return 1
 
 

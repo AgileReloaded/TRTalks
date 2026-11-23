@@ -1,63 +1,58 @@
-# Invio autorizzato del resoconto
+# Invio autorizzato del resoconto con Gmail
 
-Usare il launcher `trtalks` nella radice del progetto, con percorso assoluto.
-In sviluppo: `python3 /percorso/TRTalks/runtime/trtalks.py --root /progetto ...`.
-I comandi di invio vengono eseguiti dall'agente, non dall'intervistato.
+Leggere [backend.md](backend.md). Eseguire i comandi locali con il launcher
+`trtalks` del progetto e percorso assoluto. È l'agente a preparare il documento
+e chiamare Gmail: l'intervistato non deve eseguire comandi di invio.
 
-## Configurazione
+## Collegamento e destinazione
 
-Leggere [backend.md](backend.md) per il funzionamento SMTP e i limiti dei retry.
-Le credenziali sono in `.trtalks/config.local.json`, escluse dalla distribuzione.
-Non stampare il file, non chiedere password nella chat e non inserirle negli
-argomenti dei comandi. La configurazione iniziale della password avviene nel
-terminale dell'utente con `trtalks init`, che chiede anche indirizzi, server,
-porta, nome visualizzato e Reply-To e preserva le impostazioni preesistenti.
-La procedura non invia email; non far inserire la password nella chat.
+Verificare che il tool Gmail `send_email` sia disponibile in questa chat.
+Se manca, dichiarare il blocco e conservare il file. Non chiedere credenziali.
+`trtalks status` mostra destinatario e abilitazione senza rete. Per un test
+reale senza email usare `get_profile` di Gmail, se disponibile. Non inviare
+messaggi durante una verifica tecnica.
 
-`trtalks configure --name 'Nome Cognome' --enable-send` imposta il nome e abilita
-l'invio senza rete. Il JSON restituito mostra la destinazione effettiva senza
-credenziali. Il destinatario iniziale è trtalks@techreloaded.it; quello di una
-copia già configurata può essere diverso e va rispettato. `--recipient` permette
-di cambiarlo su richiesta dell'utente. Non cambiare destinazione dopo l'approvazione.
-Non richiedere una seconda autorizzazione del documento già approvato solo per
-abilitare la configurazione locale. L'installazione non autorizza spedizioni.
+Il destinatario iniziale è `trtalks@techreloaded.it`; rispettare quello effettivo
+della configurazione. Cambiarlo solo su richiesta con
+`trtalks configure --recipient INDIRIZZO`. Il mittente è l'account Google
+collegato. Non servono `init` o variabili di connessione.
 
-`trtalks status` controlla TLS e autenticazione con NOOP, senza email.
-`trtalks probe` crea soltanto un Markdown fittizio locale, senza rete.
-Un test tecnico non autorizza un messaggio di prova: non chiamare `send`.
+## Documento e consegna
 
-## Documento e autorizzazione
+1. Salvare il Markdown UTF-8 con nome ASCII, lettere, numeri, `_` o `-` e `.md`.
+   Mostrare il testo completo e rendere disponibile il file.
+2. Esplicitare destinatario, allegato ed eventuali dettagli riservati. Raccogliere
+   una sola autorizzazione per quella versione e destinazione; se già ricevuta,
+   usarla senza ripetere la domanda. Non inventare l'autorizzazione.
+3. Eseguire `trtalks dry-run /percorso/intervista.md` per controllare SHA-256,
+   formato e destinatario senza rete. Se l'invio locale è disabilitato ma questa
+   consegna è già autorizzata, `configure --enable-send` non richiede una seconda
+   approvazione del documento. Una prova tecnica non autorizza l'abilitazione.
+4. Eseguire `trtalks send /percorso/intervista.md --approved-sha256 HASH
+   --authorization 'Riferimento alla decisione esplicita ricevuta'`.
+   Questo prepara il tentativo; **non ha ancora inviato l'email**.
+5. Se `cached:true`, riusare la ricevuta e fermarsi senza chiamare Gmail.
+   Altrimenti chiamare subito `send_email` di Gmail con i `tool_arguments`
+   restituiti: destinatario, oggetto, corpo e Markdown in `attachment_files`.
+   Usare un percorso/riferimento accessibile al connettore per la copia approvata,
+   come descritto in backend.md. Non fermarsi alla preparazione locale.
+6. Salvare la risposta reale JSON di Gmail, senza inventare campi o ID, e usare
+   `trtalks record-result REQUEST_ID --receipt /percorso/risposta.json`.
+   Riferire l'esito effettivo e l'eventuale ID del messaggio.
 
-1. Salvare il Markdown finale UTF-8 con nome ASCII, lettere, numeri, `_` o `-`
-   e suffisso `.md`. Mostrare il documento completo e il collegamento al file.
-2. Esplicitare il destinatario effettivo, l'allegato e gli eventuali dettagli
-   riservati. Raccogliere una sola autorizzazione a consegnare quella versione
-   a quella destinazione. Il permesso di pubblicare un nome è distinto.
-   Se l'autorizzazione è già stata data, usarla senza ripetere la domanda.
-3. Eseguire `trtalks dry-run /percorso/intervista-nome.md` per ottenere SHA-256,
-   destinatario e verifica del formato senza rete. Non equivale a un test SMTP.
-4. Eseguire `trtalks send /percorso/intervista-nome.md --approved-sha256 HASH
-   --authorization 'Riferimento alla decisione esplicita ricevuta in questa chat'`.
-   Non inventare l'autorizzazione. Usare gli stessi byte mostrati e salvati.
-   Quotare gli argomenti in modo sicuro, preferibilmente con subprocess e lista.
-
-Se cambia il documento, mostrarlo nuovamente: l'approvazione precedente non
-copre automaticamente modifiche del contenuto. Non alterare i byte per ottenere
-un nuovo ID quando un invio è bloccato.
+Se cambia il contenuto o la destinazione, l'approvazione precedente non copre
+automaticamente la modifica. Quotare gli argomenti in modo sicuro, preferibilmente
+con subprocess e lista. Non mostrare i dettagli privati delle ricevute nei log.
 
 ## Esiti
 
-- `smtp_accepted:true`: «Il server SMTP ha accettato l'email con il documento
-  allegato. La ricezione nella casella del destinatario non è confermata».
-- `cached:true`: riutilizzata la ricevuta precedente; nessun nuovo invio.
-- `failed_safe`: messaggio non accettato; correggere il problema e usare, se
-  necessario, `trtalks retry REQUEST_ID` con identico messaggio e autorizzazione.
-  Non chiedere nuovamente l'approvazione della medesima consegna.
-- `uncertain`, `pending` o esito non determinato: conservare la bozza e lo stato;
-  fermarsi e indicare che il reinvio richiede controllo manuale. SMTP non
-  deduplica; non avviare retry, cicli o nuovi ID.
+- Preparazione `pending`, `email_sent:false`: messaggio non ancora inviato.
+- `gmail_accepted:true`: Gmail ha confermato l'invio con un ID; la ricezione nella
+  casella del destinatario non è confermata.
+- `cached:true`: nessun nuovo invio; ricevuta precedente riusata.
+- Errore, timeout, `pending` dopo un'interruzione o `uncertain`: conservare bozza
+  e ricevute, verificare Gmail prima di ripetere. Non avviare cicli o nuovi ID.
 
-`.trtalks/deliveries/` conserva messaggio, ID, autorizzazione e ricevute private.
-Non cancellarla durante update o uninstall. Non iniziare un invio se lo stato
-non può essere salvato. Le vecchie ricevute HTTP restano conservate e non
-possono essere ritentate attraverso il nuovo trasporto SMTP.
+`.trtalks/deliveries/` conserva autorizzazione, copia del documento e risposta
+Gmail. Non cancellare gli stati durante aggiornamenti o disinstallazione.
+I vecchi tentativi restano nello storico e non vengono ritentati tramite Gmail.

@@ -1,74 +1,53 @@
-# Trasporto SMTP locale
+# Consegna tramite Gmail
 
-TRTalks invia direttamente dal computer al server SMTP, senza chiamare endpoint
-HTTP, MCP, plugin ChatGPT o Gmail. HTTP resta soltanto per scaricare gli aggiornamenti.
+L'agente invia usando `send_email` del connettore Gmail collegato alla chat
+(nome attuale: `mcp__codex_apps__gmail_send_email`). Verificare il tool disponibile
+e il suo schema effettivo; non inventare strumenti o risultati. Il mittente è
+l'account Google autenticato. Il nome locale compare nel corpo del messaggio,
+non sostituisce il mittente Gmail. `reply_to` è facoltativo.
+
+Gli script Python preparano allegato e argomenti e conservano le ricevute:
+non possono invocare da soli il connettore ChatGPT. La consegna è completata
+dall'agente con la chiamata reale al tool Gmail, nello stesso flusso.
 
 ## Configurazione
 
-Il file privato del progetto `.trtalks/config.local.json` contiene:
+`.trtalks/config.local.json` contiene `schema:2`, `transport:"gmail"`,
+`recipient` (inizialmente `trtalks@techreloaded.it`), `sender_name`, `reply_to`
+e `send_enabled` (inizialmente `true`). Ogni documento richiede comunque la
+propria autorizzazione alla consegna. Le preferenze esistenti restano valide.
+Il collegamento Google è gestito dall'app: nessun host, porta, password, token
+locale o procedura `init`. L'aggiornamento elimina i precedenti parametri di
+connessione, conservando destinatario, preferenze e ricevute.
 
-| Campo | Valore iniziale |
-| --- | --- |
-| transport | smtp |
-| smtp_host | mail.techreloaded.it |
-| smtp_port | 465 |
-| smtp_username | trtalks@techreloaded.it |
-| smtp_password | vuota; da configurare localmente |
-| smtp_from | trtalks@techreloaded.it |
-| recipient | trtalks@techreloaded.it |
-| sender_name | nome della persona che consegna il resoconto |
-| reply_to | facoltativo |
-| send_enabled | false |
+`trtalks status` mostra le impostazioni locali senza rete e senza dichiarare
+verificato il collegamento Gmail. L'agente controlla la disponibilità di
+`send_email`; per provare l'account senza email usa `get_profile` di Gmail.
+`probe` crea solo un Markdown fittizio locale.
 
-Il destinatario è configurabile. Le installazioni precedenti mantengono il loro
-destinatario, per esempio info@techreloaded.it: leggere quello effettivo prima
-dell'autorizzazione. Un eventuale vecchio campo `endpoint` viene conservato per
-non perdere configurazione locale, ma non viene usato.
+## Preparazione, invio e ricevuta
 
-Si usa esclusivamente SMTP con TLS implicito e verifica del certificato,
-normalmente sulla porta 465. Non vengono disabilitati i controlli TLS.
-La configurazione viene scritta atomicamente con permessi 600. Se contiene una
-password ed è accessibile ad altri utenti, il runtime chiede di correggere i
-permessi prima di leggerla per l'invio. Password in chiaro nel file locale per
-scelta di configurazione: non stamparla, non copiarla nella chat, nei log, nelle
-ricevute, nelle skill o nel pacchetto. Non leggerla con strumenti che mostrano
-l'intero file. Usare `trtalks init` nel terminale per la configurazione guidata completa,
-oppure `configure --smtp-password` per cambiare soltanto la password.
+`send` salva una copia privata dei byte approvati e un tentativo `pending`,
+quindi restituisce `tool` e `tool_arguments` per l'agente. Non spedisce email.
+Il tool Gmail riceve `to`, `subject`, `payload` e `attachment_files`, oltre a
+`reply_to` se presente. Non impostare un indirizzo mittente SiteGround.
 
-## Operazioni ed esiti
+L'allegato deve essere accessibile al connettore. Se il percorso sul computer
+non è accessibile al tool, trasferire la copia approvata attraverso il canale
+file supportato dall'ambiente e usare il riferimento effettivamente restituito.
+Verificare i byte con lo SHA-256 salvato. Non inventare URI, non usare un link
+come sostituto dell'allegato e non convertire il resoconto nel solo corpo email.
+Se manca un canale file compatibile, indicare il blocco e conservare il documento.
 
-`status` apre una connessione TLS, esegue l'autenticazione e NOOP. Non invia
-MAIL, RCPT o DATA e non spedisce email. Una verifica riuscita non prova l'arrivo
-di un'email. `probe` crea esclusivamente un documento fittizio locale senza rete.
+Dopo `send_email`, salvare la risposta JSON effettiva e passarla a
+`trtalks record-result REQUEST_ID --receipt /percorso/risposta.json`.
+Un risultato con `id` e senza errore registra `accepted` e l'ID Gmail.
+Una risposta d'errore o priva di ID registra `uncertain`. Una conferma di Gmail
+non dimostra la ricezione nella casella del destinatario.
 
-`send` salva documento, metadati, autorizzazione, Message-ID e messaggio MIME
-completo prima della rete. Spedisce una email con allegato `.md`: la codifica
-base64 conserva i byte UTF-8 autorizzati, comprese le terminazioni di riga.
-Il nome della persona compare nel mittente visualizzato; `smtp_from` resta
-l'indirizzo della casella autorizzata. `reply_to`, se presente, diventa Reply-To.
-Username e password non vengono inseriti nel messaggio; la password resta
-esclusivamente nella configurazione locale.
-
-`smtp_accepted:true` richiede la risposta SMTP 250 dopo DATA. Significa soltanto
-che il server ha accettato il messaggio; `email_delivery:"unconfirmed"` non
-conferma la ricezione nella casella destinataria. Nessuna logica dipende da
-`backend_accepted`, risposte HTTP o JSON-RPC.
-
-## Ritentativi e migrazione
-
-SMTP non offre una chiave di idempotenza. Message-ID e request_id stabili servono
-alla tracciabilità, non garantiscono che il server elimini i duplicati.
-
-- `accepted`: riusare la ricevuta locale, senza connessione o reinvio.
-- `failed_safe`: errore prima di DATA o rifiuto esplicito del messaggio. Un retry
-  può riusare lo stesso ID e gli stessi byte dopo la correzione del problema.
-- `uncertain` o `pending`: reinvio bloccato, anche con `retry`; occorre verificare
-  manualmente lo stato dell'email. Non cancellare lo stato e non creare un altro
-  ID o modificare il documento per aggirare il blocco.
-
-La password può essere corretta tra due tentativi sicuri; server, account,
-mittente e destinatario devono restare gli stessi. Le vecchie ricevute HTTP
-vengono conservate: non sono convertite in tentativi SMTP. Un documento già
-registrato nel vecchio flusso richiede revisione manuale prima di un altro invio.
-Il lock locale protegge da invii paralleli sullo stesso progetto; non deduplica
-fra computer o installazioni differenti.
+Il lock e lo stato locale impediscono di preparare due volte lo stesso documento.
+Una ricevuta `accepted` viene riusata senza reinvio. `pending`, `uncertain` e
+vecchi tentativi con altri trasporti richiedono verifica manuale prima di un
+nuovo invio: `retry` non chiama mai il servizio. Un ID locale non è una chiave di
+idempotenza Gmail. Non cambiare il documento o cancellare ricevute per aggirare
+il blocco. Lo stato non deduplica fra computer differenti.

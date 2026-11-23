@@ -1,66 +1,34 @@
-"""Verified TLS SMTP transport. Credentials never enter receipts or errors."""
-import smtplib
-import ssl
+"""Gmail connector arguments. This module never opens a network connection."""
+import html
+import json
+
+GMAIL_TOOL = "mcp__codex_apps__gmail_send_email"
 
 
-class DeliveryError(Exception):
-    def __init__(self, message, uncertain=False, code=None):
-        super().__init__(message)
-        self.uncertain = uncertain
-        self.code = code
+def gmail_arguments(recipient, attachment_path, filename, name, reply_to=""):
+    arguments = {
+        "to": recipient, "subject": "TRTalks — " + filename,
+        "payload": {"mime_type": "text/html", "body": {"content":
+            "<p>Resoconto TRTalks preparato da " + html.escape(name or "TRTalks")
+            + ".</p><p>Il documento Markdown completo è allegato.</p>"}},
+        "attachment_files": [str(attachment_path)],
+    }
+    if reply_to:
+        arguments["reply_to"] = reply_to
+    return arguments
 
 
-def _close(client):
-    if client is not None:
-        # QUIT failures after DATA acceptance do not undo a successful submission.
-        try:
-            client.quit()
-        except (OSError, smtplib.SMTPException):
-            client.close()
-
-
-def smtp_transport(config, envelope=None, message=None):
-    """Login + NOOP if no message, otherwise one MAIL/RCPT/DATA, no retries."""
-    if not config["smtp_password"]:
-        raise DeliveryError("Password SMTP mancante: eseguire configure --smtp-password")
-    client = None
-    data_started = False
-    try:
-        client = smtplib.SMTP_SSL(config["smtp_host"], config["smtp_port"],
-                                 timeout=30, context=ssl.create_default_context())
-        client.login(config["smtp_username"], config["smtp_password"])
-        if message is None:
-            code, _ = client.noop()
-            if code != 250:
-                raise DeliveryError("Il server non ha confermato NOOP", code=code)
-            return {"authenticated": True, "smtp_code": code, "email_sent": False}
-        code, _ = client.mail(envelope["from"])
-        if code != 250:
-            raise DeliveryError("Mittente rifiutato dal server SMTP", code=code)
-        code, _ = client.rcpt(envelope["to"])
-        if code not in (250, 251):
-            raise DeliveryError("Destinatario rifiutato dal server SMTP", code=code)
-        # A disconnect during DATA has an ambiguous outcome. SMTP has no idempotency key.
-        data_started = True
-        code, _ = client.data(message)
-        if code != 250:
-            raise DeliveryError("Messaggio rifiutato dal server SMTP",
-                                uncertain=not 400 <= code <= 599, code=code)
-        return {"smtp_accepted": True, "smtp_code": code, "recipient": envelope["to"]}
-    except smtplib.SMTPAuthenticationError as error:
-        raise DeliveryError("Autenticazione SMTP rifiutata", code=error.smtp_code) from None
-    except smtplib.SMTPDataError as error:
-        raise DeliveryError("Messaggio rifiutato dal server SMTP",
-                            uncertain=not 400 <= error.smtp_code <= 599,
-                            code=error.smtp_code) from None
-    except ssl.SSLCertVerificationError:
-        raise DeliveryError("Certificato TLS del server SMTP non valido") from None
-    except (OSError, smtplib.SMTPException):
-        # Do not copy server replies: they may contain echoed authentication data.
-        raise DeliveryError("Connessione SMTP fallita o interrotta",
-                            uncertain=data_started) from None
-    finally:
-        try:
-            _close(client)
-        except (OSError, smtplib.SMTPException):
-            pass
+def gmail_receipt(value):
+    """Read the connector response, including the standard MCP wrappers."""
+    if not isinstance(value, dict) or value.get("isError") or value.get("error"):
+        raise ValueError("Gmail non ha confermato l'invio")
+    if isinstance(value.get("structuredContent"), dict):
+        return gmail_receipt(value["structuredContent"])
+    if isinstance(value.get("content"), list):
+        parts = [p for p in value["content"] if isinstance(p, dict) and p.get("type") == "text"]
+        if len(parts) == 1:
+            return gmail_receipt(json.loads(parts[0]["text"]))
+    message_id = value.get("id")
+    if not isinstance(message_id, str) or not message_id.strip() or any(c.isspace() for c in message_id):
+        raise ValueError("Ricevuta Gmail priva dell'id del messaggio; verificare manualmente")
+    return value

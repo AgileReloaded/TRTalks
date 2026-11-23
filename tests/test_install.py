@@ -13,7 +13,7 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 from build_release import package
-from common import atomic_json, canonical, digest
+from common import atomic_json, canonical, digest, validate_config
 from catalog import required_files
 import manage
 
@@ -29,6 +29,30 @@ class InstallTests(unittest.TestCase):
     def install(self):
         return manage.install(self.root, self.raw, self.sha, "https://example.test/releases/latest/download")
 
+    def test_application_skill_mode_preserves_protected_skill_and_supports_updates(self):
+        self.install()
+        protected = self.root / ".agents/skills/trstory/SKILL.md"
+        original = protected.read_bytes()
+        replace = os.replace
+        def forbid_skill_mutation(source, destination):
+            if ".agents" in Path(source).parts or ".agents" in Path(destination).parts:
+                raise AssertionError("Protected skill mutation")
+            return replace(source, destination)
+        with mock.patch("manage.os.replace", side_effect=forbid_skill_mutation):
+            result = manage.install(self.root, self.new, self.new_sha, update=True, skills_in_application=True)
+            self.assertTrue(result["changed"])
+            self.assertEqual(protected.read_bytes(), original)
+            manage.inspect_installation(self.root)
+            self.assertIn(".trtalks/app/skills/ID/", (self.root / "AGENTS.md").read_text())
+            newer, sha = package("0.5.0a2")
+            self.assertTrue(manage.install(self.root, newer, sha, update=True)["changed"])
+            paths = subprocess.run([sys.executable, str(self.root / "trtalks"), "paths"],
+                                   capture_output=True, text=True, check=True)
+            self.assertEqual(json.loads(paths.stdout)["skills"]["trstory"], str(self.root / ".trtalks/app/skills/trstory"))
+            manage.uninstall(self.root)
+            self.assertEqual(protected.read_bytes(), original)
+            self.assertFalse((self.root / ".trtalks/app").exists())
+
     def test_installed_launcher_runs_and_refuses_overwrite(self):
         self.install()
         result = subprocess.run([sys.executable, str(self.root / "trtalks"), "--version"], capture_output=True, text=True)
@@ -39,7 +63,7 @@ class InstallTests(unittest.TestCase):
     def test_update_preserves_configuration_credentials_drafts_state_and_local_rules(self):
         self.install()
         local = self.root / ".trtalks/config.local.json"
-        atomic_json(local, dict(manage.DEFAULT_CONFIG, smtp_password="synthetic-private-test-value",
+        atomic_json(local, dict(manage.DEFAULT_CONFIG, schema=1, transport="smtp", smtp_password="synthetic-private-test-value",
                                 smtp_username="local@techreloaded.it", recipient="info@techreloaded.it"))
         before = local.read_bytes()
         draft = self.root / "drafts/intervista.md"
@@ -51,7 +75,9 @@ class InstallTests(unittest.TestCase):
         override.write_text("Regole locali")
         result = manage.install(self.root, self.new, self.new_sha, update=True)
         self.assertTrue(result["changed"])
-        self.assertEqual(local.read_bytes(), before)
+        self.assertEqual(json.loads(local.read_text()), validate_config(json.loads(before)))
+        self.assertFalse(any("synthetic-private-test-value" in p.read_text()
+                             for p in (self.root / ".trtalks/backups").rglob("*") if p.is_file()))
         self.assertEqual(local.stat().st_mode & 0o777, 0o600)
         self.assertEqual(draft.read_text(), "Bozza da conservare")
         self.assertEqual(json.loads(state.read_text()), {"id": "retained"})
@@ -92,7 +118,7 @@ class InstallTests(unittest.TestCase):
         current = json.loads(config.read_text())
         self.assertEqual(current["custom_private_key"], "synthetic-local-value")
         self.assertEqual(current["sender_name"], "Test Name")
-        self.assertIs(current["send_enabled"], False)
+        self.assertIs(current["send_enabled"], True)
 
     def test_bad_checksum_and_unsafe_archive_leave_no_installation(self):
         with self.assertRaises(ValueError):
@@ -118,7 +144,7 @@ class InstallTests(unittest.TestCase):
         with mock.patch("manage.download", side_effect=download):
             result = manage.remote_update(self.root)
         self.assertTrue(result["changed"])
-        self.assertEqual(config.read_bytes(), before)
+        self.assertEqual(json.loads(config.read_text()), validate_config(json.loads(before)))
 
     def test_dry_run_and_downgrade_do_not_change_installation(self):
         self.install()
@@ -236,7 +262,7 @@ class InstallTests(unittest.TestCase):
         self.assertFalse(legacy.exists())
         self.assertEqual((self.root / ".agents/skills/trstory/references/regole.local.md").read_text(), "Regole del caso")
         self.assertEqual((self.root / ".trtalks/app/runtime/references/backend.local.md").read_text(), "Regole condivise")
-        self.assertEqual(config.read_bytes(), before)
+        self.assertEqual(json.loads(config.read_text()), validate_config(json.loads(before)))
         self.assertEqual(json.loads(retained.read_text())["request_id"], "retained-original-id")
 
 

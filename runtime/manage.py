@@ -18,7 +18,7 @@ import uuid
 import zipfile
 
 from catalog import required_files, safe_relative, skill_files, validate_catalog, validate_skill_names
-from common import DEFAULT_CONFIG, canonical, digest, https_url, locked, plain_path
+from common import DEFAULT_CONFIG, canonical, digest, https_url, locked, plain_path, validate_config
 
 MAX_ARCHIVE = 8 * 1024 * 1024
 MANIFEST = "release-manifest.json"
@@ -121,10 +121,13 @@ def inspect_installation(root):
     app = plain_path(root / ".trtalks/app")
     if app.exists():
         manifest, local = check_installed(app)
+        settings_path = root / ".trtalks/install.json"
+        settings = json.loads(settings_path.read_text()) if settings_path.exists() else {}
+        in_application = settings.get("skills_in_application", False)
         skills = {}
         for entry in manifest["catalog"]["skills"]:
             key = entry["id"]
-            target = root / ".agents/skills" / key
+            target = (app / "skills" if in_application else root / ".agents/skills") / key
             skills[key] = {"target": target, "local": check_tree(target, skill_files(manifest, key))}
         return manifest, local, skills, False
     legacy = plain_path(root / ".agents/skills/trtalks")
@@ -146,8 +149,8 @@ def launcher_bytes(root, legacy=False):
             + repr(str(script)) + "] + sys.argv[1:])\n").encode("utf-8")
 
 
-def guide_bytes():
-    return ("# TRTalks\n\n"
+def guide_bytes(in_application=False):
+    guide = ("# TRTalks\n\n"
         "Le tipologie di conversazione installate sono dichiarate in `.trtalks/app/conversations.json`.\n"
         "Leggere il catalogo quando l'utente chiede una conversazione TRTalks.\n"
         "Se la richiesta identifica una tipologia, usare il relativo SKILL.md in `.agents/skills/ID/`.\n"
@@ -155,6 +158,12 @@ def guide_bytes():
         "Non mescolare automaticamente domande e regole di skill diverse.\n"
         "Il comando `./trtalks skills` elenca nomi e prompt; `./trtalks paths` mostra i percorsi comuni.\n"
         "Le richieste tecniche non avviano conversazioni né autorizzano invii.\n").encode("utf-8")
+
+    if in_application:
+        guide = guide.replace(b".agents/skills/ID/", b".trtalks/app/skills/ID/")
+        guide += ("\nUsare le istruzioni correnti nell’applicazione anche se una copia precedente della skill è presente in `.agents/skills/`.\n"
+                  "La consegna usa esclusivamente send_email del connettore Gmail e le regole correnti in `.trtalks/app/runtime/references/invio.md`.\n").encode("utf-8")
+    return guide
 
 
 def commit_plan(plan, backup):
@@ -189,7 +198,7 @@ def staged_file(directory, name, data, mode=0o600):
     return path
 
 
-def install(root, raw, expected, release_url=None, update=False, dry_run=False):
+def install(root, raw, expected, release_url=None, update=False, dry_run=False, skills_in_application=False):
     root = Path(root).expanduser().resolve()
     manifest, files = read_archive(raw, expected)
     state = plain_path(root / ".trtalks")
@@ -224,6 +233,7 @@ def install(root, raw, expected, release_url=None, update=False, dry_run=False):
         metadata = json.loads(metadata_path.read_text()) if metadata_path.exists() else {"schema": 2}
         if not isinstance(metadata, dict):
             raise ValueError("Metadati di installazione non validi")
+        skills_in_application = skills_in_application or metadata.get("skills_in_application", False)
         with tempfile.TemporaryDirectory(prefix="stage-", dir=str(state)) as temporary:
             temporary = Path(temporary)
             staged_app = temporary / "app"
@@ -251,20 +261,35 @@ def install(root, raw, expected, release_url=None, update=False, dry_run=False):
                     path = staged_skill / name
                     path.parent.mkdir(parents=True, exist_ok=True)
                     path.write_bytes(data)
-                plan.append((skill_root / key, staged_skill))
-            for key in sorted(set(old_skills) - new_ids):
+                if skills_in_application:
+                    # App resources remain authoritative when .agents is protected.
+                    shutil.copytree(staged_skill, staged_app / "skills" / key, dirs_exist_ok=True)
+                else:
+                    plan.append((skill_root / key, staged_skill))
+            for key in sorted(set(old_skills) - new_ids) if not skills_in_application else ():
                 plan.append((old_skills[key]["target"], None))
             plan.append((launcher, staged_file(temporary, "launcher", launcher_bytes(root), 0o755)))
-            if not config.exists():
-                plan.append((config, staged_file(temporary, "config", canonical(DEFAULT_CONFIG) + b"\n")))
-            metadata.update(schema=2, installed=True)
+            local_config = json.loads(config.read_text()) if config.exists() else {}
+            migrated_config = validate_config(local_config)
+            if not config.exists() or migrated_config != local_config:
+                plan.append((config, staged_file(temporary, "config", canonical(migrated_config) + b"\n")))
+            metadata.update(schema=2, installed=True, skills_in_application=skills_in_application)
             if release_url:
                 metadata["release_url"] = release_url.rstrip("/")
             plan.append((metadata_path, staged_file(temporary, "metadata", canonical(metadata) + b"\n")))
             guide = plain_path(root / "AGENTS.md")
-            if not guide.exists():
-                plan.append((guide, staged_file(temporary, "guide", guide_bytes(), 0o644)))
-            commit_plan(plan, state / "backups" / uuid.uuid4().hex)
+            if not guide.exists() or (skills_in_application and guide.read_bytes() == guide_bytes()):
+                plan.append((guide, staged_file(temporary, "guide", guide_bytes(skills_in_application), 0o644)))
+            elif skills_in_application and guide.read_bytes() != guide_bytes(True):
+                raise ValueError("AGENTS.md personalizzato: specificare le skill dell’applicazione prima di attivare questa modalità")
+            backup = state / "backups" / uuid.uuid4().hex
+            commit_plan(plan, backup)
+            # Rollback may need the original config, but successful migration must
+            # not leave discarded connection passwords in the backup directory.
+            for index, (target, _) in enumerate(plan):
+                previous = backup / str(index)
+                if target == config and previous.exists():
+                    previous.unlink()
         return {"changed": True, "version": manifest["version"], "root": str(root),
                 "skills": sorted(new_ids), "codex_recognition_verified": False,
                 "local_configuration_preserved": True, "migrated_legacy_installation": legacy}
@@ -322,13 +347,13 @@ def uninstall(root):
         metadata["installed"] = False
         with tempfile.TemporaryDirectory(prefix="uninstall-", dir=str(state)) as temporary:
             temporary = Path(temporary)
-            plan = [(entry["target"], None) for entry in skills.values()]
+            plan = [] if metadata.get("skills_in_application") else [(entry["target"], None) for entry in skills.values()]
             if not legacy:
                 plan.append((state / "app", None))
             if launcher.exists():
                 plan.append((launcher, None))
             guide = plain_path(root / "AGENTS.md")
-            if guide.exists() and guide.read_bytes() == guide_bytes():
+            if guide.exists() and guide.read_bytes() == guide_bytes(metadata.get("skills_in_application", False)):
                 plan.append((guide, None))
             plan.append((path, staged_file(temporary, "metadata", canonical(metadata) + b"\n")))
             backup = state / "backups" / ("uninstalled-" + uuid.uuid4().hex)

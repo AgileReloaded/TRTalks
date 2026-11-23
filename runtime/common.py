@@ -11,18 +11,14 @@ import tempfile
 import urllib.parse
 
 DEFAULT_CONFIG = {
-    "schema": 1,
-    "transport": "smtp",
-    "smtp_host": "mail.techreloaded.it",
-    "smtp_port": 465,
-    "smtp_username": "trtalks@techreloaded.it",
-    "smtp_password": "",
-    "smtp_from": "trtalks@techreloaded.it",
+    "schema": 2,
+    "transport": "gmail",
     "recipient": "trtalks@techreloaded.it",
-    "sender_name": "",
+    "sender_name": "TRTalks",
     "reply_to": "",
-    "send_enabled": False,
+    "send_enabled": True,
 }
+
 
 
 def now():
@@ -96,24 +92,22 @@ def email_address(value):
 
 
 def validate_config(value):
-    if not isinstance(value, dict) or value.get("schema", 1) != 1:
+    if not isinstance(value, dict) or type(value.get("schema", 1)) is not int or value.get("schema", 1) not in (1, 2):
         raise ValueError("Configurazione locale non valida")
-    result = dict(DEFAULT_CONFIG, **value)
-    if result["transport"] != "smtp":
-        raise ValueError("TRTalks supporta soltanto l'invio SMTP locale")
-    if (not isinstance(result["smtp_host"], str)
-            or not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?", result["smtp_host"])):
-        raise ValueError("smtp_host non valido")
-    if type(result["smtp_port"]) is not int or not 1 <= result["smtp_port"] <= 65535:
-        raise ValueError("smtp_port non valida")
-    for field in ("smtp_username", "smtp_password", "sender_name", "reply_to"):
+    # Drop legacy connection credentials rather than carrying them into Gmail.
+    result = {k: v for k, v in value.items()
+              if not k.startswith(("smtp_", "http_", "mcp_"))
+              and k not in ("endpoint", "api_key", "token", "authorization")}
+    legacy = value.get("schema", 1) == 1
+    if not legacy and value.get("transport", "gmail") != "gmail":
+        raise ValueError("Trasporto supportato: gmail")
+    result = dict(DEFAULT_CONFIG, **result)
+    result.update(schema=2, transport="gmail")
+    if not email_address(result["recipient"]):
+        raise ValueError("Destinatario non valido")
+    for field in ("sender_name", "reply_to"):
         if not isinstance(result[field], str):
             raise ValueError(field + " deve essere una stringa")
-    if not result["smtp_username"].strip() or re.search(r"[\x00-\x1f\x7f]", result["smtp_username"]):
-        raise ValueError("smtp_username non valido")
-    for field in ("smtp_from", "recipient"):
-        if not email_address(result[field]):
-            raise ValueError(field + " non valido")
     if result["reply_to"] and not email_address(result["reply_to"]):
         raise ValueError("Reply-To non valido")
     if (len(result["sender_name"].encode("utf-8")) > 200
@@ -121,14 +115,10 @@ def validate_config(value):
         raise ValueError("Nome mittente non valido, massimo 200 byte UTF-8")
     if type(result["send_enabled"]) is not bool:
         raise ValueError("send_enabled deve essere booleano")
-    # Legacy endpoint and unknown local settings are retained, but never used for delivery.
     return result
 
 
 def load_config(root):
     path = plain_path(Path(root) / ".trtalks" / "config.local.json")
     value = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
-    result = validate_config(value)
-    if result["smtp_password"] and path.stat().st_mode & 0o077:
-        raise ValueError("Credenziali SMTP: il file config.local.json deve avere permessi 600; usare chmod 600")
-    return result
+    return validate_config(value)

@@ -8,7 +8,9 @@ description: Raccogliere case histories ed esperienze di progetto per le Stories
 Condurre l'intervista e creare il resoconto locale. La conversazione e la voce
 sono fornite da Codex. TRStory è una delle skill di conversazione dell’applicazione
 TRTalks; gli strumenti comuni gestiscono verifica, consegna e manutenzione.
-Consegnare tramite SMTP locale con gli strumenti TRTalks, senza plugin o endpoint HTTP.
+Consegnare il Markdown allegato tramite `send_email` del connettore Gmail disponibile
+alla chat. Il mittente è l’account Google collegato; seguire le istruzioni condivise
+di consegna. Non usare credenziali o server di posta locali.
 
 ## Prova breve
 
@@ -25,7 +27,8 @@ Mostrare tutto il Markdown e un collegamento al file effettivo.
 
 Se viene chiesta anche una verifica tecnica, eseguire con percorso assoluto
 `trtalks probe`: crea soltanto un secondo Markdown fittizio locale, senza rete.
-`trtalks status` verifica TLS e autenticazione SMTP senza inviare email.
+`trtalks status` mostra la configurazione Gmail senza rete. Per una verifica
+della connessione usare `get_profile` di Gmail, se disponibile, senza inviare email.
 Riportare soltanto gli esiti reali. Una prova della skill non autorizza spedizioni.
 
 ## Raccolta dell'intervista
@@ -63,8 +66,9 @@ alla consegna di quella versione al destinatario effettivo della configurazione,
 riservati contrassegnati. Se l'autorizzazione è già stata data per la versione
 finale e la destinazione indicate, usarla senza ripetere la domanda.
 
-Eseguire direttamente gli script: non chiedere alla persona comandi manuali di
-invio. Non considerare l'installazione un'autorizzazione a spedire documenti.
+Eseguire la preparazione locale, chiamare direttamente `send_email` di Gmail con
+l’allegato e registrare la risposta reale: non fermarsi alla preparazione e non
+chiedere alla persona comandi manuali di invio. Non considerare l'installazione un'autorizzazione a spedire documenti.
 Non attivare l'invio o mandare email durante una verifica tecnica. Per gli
 aggiornamenti richiesti usare il launcher `trtalks update` nel progetto;
 `trtalks uninstall` disattiva la skill conservando dati e impostazioni.
@@ -77,7 +81,9 @@ dichiarare una prova vocale riuscita senza lo scambio reale.
 
 Per una richiesta esclusivamente tecnica non avviare l'intervista. Leggere
 `runtime/references/backend.md` dell'applicazione e usare `trtalks probe` per una
-prova locale senza rete o `trtalks status` per verificare SMTP senza email.
-Non stampare la configurazione privata e non chiedere password nella chat.
-Non confondere accettazione SMTP e ricezione effettiva dell'email. Dopo un esito
-incerto fermarsi: Message-ID e request_id non garantiscono deduplicazione SMTP.
+prova locale senza rete o `trtalks status` per vedere le impostazioni Gmail.
+Non chiedere password: il collegamento Google è gestito dall’app. Verificare
+la disponibilità del tool nella chat prima della consegna. Se manca, dichiararlo
+e conservare il documento; non sostituirlo con script di rete. Non confondere
+preparazione locale, conferma di Gmail e ricezione effettiva dell’email. Dopo un
+esito incerto fermarsi e verificare prima di ripetere l’invio.
