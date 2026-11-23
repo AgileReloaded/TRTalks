@@ -6,15 +6,19 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import tempfile
-import urllib.error
 import urllib.parse
-import urllib.request
 
 DEFAULT_CONFIG = {
     "schema": 1,
-    "endpoint": "https://techreloaded.it/shared/php/trdocument-mcp.php",
-    "recipient": "info@techreloaded.it",
+    "transport": "smtp",
+    "smtp_host": "mail.techreloaded.it",
+    "smtp_port": 465,
+    "smtp_username": "trtalks@techreloaded.it",
+    "smtp_password": "",
+    "smtp_from": "trtalks@techreloaded.it",
+    "recipient": "trtalks@techreloaded.it",
     "sender_name": "",
     "reply_to": "",
     "send_enabled": False,
@@ -86,47 +90,45 @@ def locked(path):
         os.close(fd)
 
 
-def load_config(root):
-    path = plain_path(Path(root) / ".trtalks" / "config.local.json")
-    value = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+def email_address(value):
+    return (isinstance(value, str) and len(value.encode("utf-8")) <= 254
+            and re.fullmatch(r"[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+", value))
+
+
+def validate_config(value):
     if not isinstance(value, dict) or value.get("schema", 1) != 1:
         raise ValueError("Configurazione locale non valida")
     result = dict(DEFAULT_CONFIG, **value)
-    https_url(result["endpoint"])
-    if result["recipient"] != DEFAULT_CONFIG["recipient"]:
-        raise ValueError("Il backend esistente invia soltanto a info@techreloaded.it")
+    if result["transport"] != "smtp":
+        raise ValueError("TRTalks supporta soltanto l'invio SMTP locale")
+    if (not isinstance(result["smtp_host"], str)
+            or not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?", result["smtp_host"])):
+        raise ValueError("smtp_host non valido")
+    if type(result["smtp_port"]) is not int or not 1 <= result["smtp_port"] <= 65535:
+        raise ValueError("smtp_port non valida")
+    for field in ("smtp_username", "smtp_password", "sender_name", "reply_to"):
+        if not isinstance(result[field], str):
+            raise ValueError(field + " deve essere una stringa")
+    if not result["smtp_username"].strip() or re.search(r"[\x00-\x1f\x7f]", result["smtp_username"]):
+        raise ValueError("smtp_username non valido")
+    for field in ("smtp_from", "recipient"):
+        if not email_address(result[field]):
+            raise ValueError(field + " non valido")
+    if result["reply_to"] and not email_address(result["reply_to"]):
+        raise ValueError("Reply-To non valido")
+    if (len(result["sender_name"].encode("utf-8")) > 200
+            or re.search(r"[\x00-\x1f\x7f]", result["sender_name"])):
+        raise ValueError("Nome mittente non valido, massimo 200 byte UTF-8")
     if type(result["send_enabled"]) is not bool:
         raise ValueError("send_enabled deve essere booleano")
+    # Legacy endpoint and unknown local settings are retained, but never used for delivery.
     return result
 
 
-class NoRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        return None
-
-
-def fetch(url, payload=None, limit=65536):
-    https_url(url)
-    req = urllib.request.Request(url, data=None if payload is None else canonical(payload),
-        method="GET" if payload is None else "POST", headers={
-            "Accept": "application/json", "Content-Type": "application/json; charset=utf-8",
-            "User-Agent": "TRTalks/0.2"})
-    try:
-        response = urllib.request.build_opener(NoRedirect()).open(req, timeout=20)
-    except urllib.error.HTTPError as error:
-        response = error
-    with response:
-        raw = response.read(limit + 1)
-        return {"http_status": response.code, "content_type": response.headers.get_content_type(),
-                "body": raw[:limit].decode("utf-8", errors="replace"),
-                "body_truncated": len(raw) > limit}
-
-
-def response_json(exchange):
-    if (exchange["http_status"] != 200 or exchange["content_type"] != "application/json"
-            or exchange["body_truncated"]):
-        raise ValueError("Risposta HTTP inattesa; vedere ricevuta, esito email non determinato")
-    result = json.loads(exchange["body"])
-    if not isinstance(result, dict):
-        raise ValueError("Risposta JSON non valida")
+def load_config(root):
+    path = plain_path(Path(root) / ".trtalks" / "config.local.json")
+    value = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    result = validate_config(value)
+    if result["smtp_password"] and path.stat().st_mode & 0o077:
+        raise ValueError("Credenziali SMTP: il file config.local.json deve avere permessi 600; usare chmod 600")
     return result

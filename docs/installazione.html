@@ -18,14 +18,18 @@
 <pre id="install">URL di distribuzione non ancora configurato.</pre>
 <button id="copy" disabled>Copia comando</button>
 <p><small>L’installazione crea la cartella TRTalks nella tua cartella personale. Non invia email.</small></p>
-<h2>2. Apri TRTalks in Codex</h2>
+<h2>2. Configura l’invio sul tuo computer</h2>
+<pre>~/TRTalks/trtalks init
+~/TRTalks/trtalks status</pre>
+<p>La procedura chiede indirizzi, server SMTP, username e password. Invio accetta i valori proposti. La password viene richiesta nel Terminale senza mostrarla e salvata soltanto nella configurazione locale. Il controllo SMTP non invia email. Gli aggiornamenti preservano le credenziali.</p>
+<h2>3. Apri TRTalks in Codex</h2>
 <p>Aggiungi la cartella <code>~/TRTalks</code> come progetto e scegli la skill:</p>
 <!-- trtalks:skills --><ul><li><strong>TRStory</strong> — raccoglie case histories per TechReloaded.<br><code>Usa $trstory</code></li></ul><!-- /trtalks:skills -->
 <p>Puoi anche chiedere all’assistente di mostrarti le conversazioni TRTalks disponibili.</p>
 <p>Puoi correggere una risposta, saltare una domanda o concludere. Alla fine ricevi il file completo. La conversazione può essere testuale; la disponibilità della voce va verificata nella tua app.</p>
-<h2>3. Consegna alla redazione</h2>
+<h2>4. Consegna il documento</h2>
 <p>Prima dell’invio, l’assistente mostra il documento e raccoglie la tua autorizzazione alla consegna. Poi esegue lo script: non devi lanciare comandi di invio.</p>
-<p class="note">L’invio è disabilitato alla prima installazione. Chi configura TRTalks deve indicare il nome del mittente e abilitarlo dopo il controllo del collegamento. Le bozze rimangono disponibili se la consegna fallisce.</p>
+<p class="note">L’invio è disabilitato alla prima installazione. Chi configura TRTalks deve indicare nome e credenziali SMTP locali. La password non viene distribuita né mostrata nella chat. Il destinatario iniziale è trtalks@techreloaded.it ed è configurabile. Le bozze rimangono disponibili se la consegna fallisce.</p>
 <h2>Aggiorna o disinstalla</h2>
 <pre>~/TRTalks/trtalks update
 ~/TRTalks/trtalks uninstall</pre>

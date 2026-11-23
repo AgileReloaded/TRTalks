@@ -1,3 +1,5 @@
+> Documento storico della versione HTTP. Dalla 0.4.0a1 la consegna usa SMTP locale; vedere README.md.
+
 # Verifica infrastruttura TRTalks — 23 novembre 2026
 
 Documento storico della versione 0.2.0a1. La successiva separazione di TRStory

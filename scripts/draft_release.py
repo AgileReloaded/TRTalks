@@ -27,7 +27,7 @@ def main():
     base = "https://github.com/" + args.repo + "/releases/latest/download"
     build(ROOT / "dist", base)
     notes = ROOT / "dist/release-notes.md"
-    notes.write_text("TRTalks " + version + "\n\nTRStory per case histories, catalogo di skill di conversazione e runtime comune. Installazione HTTPS con checksum, aggiornamento conservativo e consegna HTTP al backend TechReloaded.\n\nInvio disabilitato in prima installazione. Collaudo remoto e vocale da verificare; vedere docs/SKILL-DI-CONVERSAZIONE.md.\n", encoding="utf-8")
+    notes.write_text("TRTalks " + version + "\n\nTRStory per case histories, catalogo di skill di conversazione e runtime comune. Installazione HTTPS con checksum, aggiornamento conservativo e consegna SMTP locale con allegato Markdown.\n\nInvio disabilitato in prima installazione. Collaudo remoto e vocale da verificare; vedere docs/SKILL-DI-CONVERSAZIONE.md.\n", encoding="utf-8")
     command = ["gh", "release", "create", "v" + version, "--repo", args.repo, "--verify-tag",
                "--draft", "--title", "TRTalks " + version, "--notes-file", str(notes)]
     command.extend(str(ROOT / "dist" / asset) for asset in ("trtalks.zip", "SHA256SUMS", "release.json", "setup.sh", "index.html"))

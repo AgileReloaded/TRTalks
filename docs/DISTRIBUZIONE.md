@@ -5,8 +5,8 @@
 Il modello è una release di repository pubblico, come Websmith. L’utente ha
 creato su GitHub il repository pubblico `AgileReloaded/TRTalks` e ha configurato
 in Fork `origin` come `https://github.com/AgileReloaded/TRTalks.git`.
-La release installabile non è ancora pubblicata e verificata. La rete di
-questa sessione non raggiunge GitHub. `AgileReloaded/TRTalks` è la destinazione predefinita del comando
+La precedente release è stata installata dall’utente; la nuova versione SMTP
+richiede una nuova pubblicazione. La sessione non ha verificato la release remota. `AgileReloaded/TRTalks` è la destinazione predefinita del comando
 `python3 scripts/publish.py`, predisposto per eseguire dal Terminale creazione
 del repository pubblico, commit dei sorgenti, push, tag e pubblicazione degli asset.
 La sessione corrente non ha eseguito tali operazioni remote.
@@ -22,7 +22,7 @@ dinamico o nuove rotte del backend email.
    sorgenti ed escludere i dati locali tramite `.gitignore`. Il pacchetto usa
    una lista esplicita dei file e non include nemmeno file estranei alla lista.
 2. Eseguire i test, aggiornare `VERSION` e creare/pushare il tag corrispondente.
-   La release iniziale predisposta è `0.3.0a1`, tag `v0.3.0a1`.
+   La release iniziale predisposta è `0.4.0a2`, tag `v0.4.0a2`.
 3. Generare gli asset con la base download reale:
 
    ```bash
@@ -46,7 +46,7 @@ dinamico o nuove rotte del backend email.
    contrassegnata come Latest, anche se il numero ha suffisso alpha:
 
    ```bash
-   gh release edit v0.3.0a1 --repo OWNER/REPO --draft=false --latest
+   gh release edit v0.4.0a2 --repo OWNER/REPO --draft=false --latest
    ```
 
 6. Ospitare `dist/index.html` come pagina pubblica (per esempio GitHub Pages o
@@ -64,21 +64,25 @@ una versione fissata usare come base `/releases/download/vVERSION` anziché
 - Installare dalla release pubblica senza autenticazione GitHub in una cartella
   dedicata e controllare versione e presenza della skill nell’app effettiva.
 - Eseguire una breve intervista testuale fittizia e controllare il Markdown.
-- Eseguire `probe` e controllare la risposta reale senza email. Non sostituire
-  questo test con un invio al backend operativo.
-- Eseguire `status` sul backend operativo: questo non spedisce.
+- Eseguire `probe`: crea un file fittizio locale senza rete.
+- Configurare SMTP con `init` nel terminale, senza esporre
+  la password. Eseguire `status`: controlla TLS e autenticazione senza spedire.
 - Provare una seconda release con `update`, verificando che configurazione,
   bozze, eventuali credenziali e ID di consegna restino identici.
 - Verificare la voce separatamente: dettatura e dialogo vocale non equivalgono.
-- La verifica di invio email richiede una richiesta esplicita distinta. Non è
-  stata eseguita durante la preparazione dell’infrastruttura.
+- La verifica di invio email richiede una richiesta esplicita distinta. Il precedente
+  script SMTP è stato provato dall’utente; il runtime completo va collaudato
+  separatamente con una consegna autorizzata.
 
 ## Configurazione locale
 
-Il setup inizializza `send_enabled:false`. Il backend letto non richiede token;
-se in futuro verrà introdotta autenticazione, dovrà stare nella configurazione
-o nell’ambiente locale ed essere supportata dal contratto server prima dell’uso.
-Non distribuire un segreto condiviso nelle skill.
+Il setup inizializza `send_enabled:false` e `smtp_password` vuota.
+Username, password, server e destinatario sono in `.trtalks/config.local.json`,
+con permessi 600. `init` chiede la password senza mostrarla.
+Il file è escluso da Git e dal pacchetto e viene preservato dagli aggiornamenti.
+Il destinatario iniziale è trtalks@techreloaded.it; le copie esistenti conservano
+quello già configurato. Non distribuire credenziali condivise nelle skill.
+Le vecchie ricevute HTTP restano conservate e non vengono ritentate via SMTP.
 
 Nessuno script scrive nei progetti TRInterview/TRConversations o Websmith.
 L’updater non esegue pull Git, non tocca il repository dei sorgenti e non

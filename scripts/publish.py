@@ -98,7 +98,7 @@ def publish(repo, dry_run=False):
         if "HTTP 404" not in release.stderr:
             raise RuntimeError(release.stderr.strip())
         notes = ROOT / "dist/release-notes.md"
-        notes.write_text("TRTalks " + metadata["version"] + "\n\nTRStory per case histories, catalogo di skill, runtime comune, installazione e aggiornamento con checksum.\n\nInvio email disabilitato alla prima installazione. Voce e consegna remota da collaudare.\n", encoding="utf-8")
+        notes.write_text("TRTalks " + metadata["version"] + "\n\nTRStory per case histories, catalogo di skill, runtime comune, installazione e aggiornamento con checksum.\n\nInvio SMTP locale con credenziali escluse dal pacchetto e conservate negli aggiornamenti. Retry incerti bloccati. Invio disabilitato alla prima installazione; configurare la password localmente. Voce e flusso completo da collaudare.\n", encoding="utf-8")
         assets = [str(ROOT / "dist" / name) for name in ("trtalks.zip", "SHA256SUMS", "release.json", "setup.sh", "index.html")]
         command(["gh", "release", "create", tag, *assets, "--repo", repo, "--verify-tag", "--draft",
                  "--title", "TRTalks " + metadata["version"], "--notes-file", str(notes)])

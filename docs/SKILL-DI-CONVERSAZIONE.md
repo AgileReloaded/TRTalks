@@ -1,6 +1,6 @@
 # TRTalks e le skill di conversazione
 
-Versione: **0.3.0a1**. TRTalks è l’applicazione; ogni tipologia di conversazione
+Versione: **0.4.0a1**. TRTalks è l’applicazione; ogni tipologia di conversazione
 è una skill distinta. La prima, dedicata alle case histories, si chiama
 **TRStory** e si invoca con `$trstory`. Nel precedente sorgente aveva ID
 `trtalks`; i progetti esterni TRInterview/TRConversations non sono stati rinominati.
@@ -11,7 +11,7 @@ Versione: **0.3.0a1**. TRTalks è l’applicazione; ogni tipologia di conversazi
 | --- | --- |
 | `conversations.json` | Catalogo delle skill: ID, nome, descrizione e lista dei file |
 | `skills/trstory/` | SKILL.md, metadati UI, domande, regole e template delle case histories |
-| `runtime/` | CLI, installazione, update, consegna e prove HTTP comuni |
+| `runtime/` | CLI, installazione, update, consegna SMTP e verifiche comuni |
 | `runtime/references/` | Contratto backend e istruzioni di invio comuni |
 | `scripts/` | Costruzione e pubblicazione dell’applicazione |
 
@@ -82,13 +82,17 @@ restano nella stessa posizione, senza rigenerare gli ID delle richieste.
 
 ## Verifiche e limiti
 
-Sono stati eseguiti test reali su filesystem temporaneo per installazione di
-più skill, elenco CLI, update, rimozione di una skill, migrazione del vecchio
-formato e conservazione delle istruzioni di progetto. I controlli del client
-di consegna e del contratto PHP restano senza email: `mail()` è disabilitata.
+Il runtime 0.4.0a1 usa SMTP locale con credenziali nel file di configurazione.
+Le skill usano la destinazione effettiva senza fissarla nel testo dell’intervista.
+`status` verifica TLS e autenticazione senza email; `probe` crea una bozza locale.
 
-Non è stato verificato il riconoscimento della skill nell’app effettiva, né il
-dialogo vocale. La sessione continua a non raggiungere GitHub e non può creare
-`.git` nel progetto: nessun repository o release è stato pubblicato da qui.
-Il comando `scripts/publish.py` prepara ed esegue la pubblicazione dal Terminale
-normale del computer di sviluppo. La sua operazione remota resta da collaudare.
+I test coprono installazione, update, credenziali preservate, più skill, rollback,
+consegna MIME, rifiuti SMTP e blocco dei retry incerti. Il test SMTP TLS su
+loopback è predisposto senza invii esterni, ma è stato saltato in questa sessione
+perché l’ambiente vieta l’apertura del socket locale. Il precedente
+script autonomo è stato provato dall’utente con successo; il runtime completo
+richiede un distinto collaudo autorizzato per confermare l’invio esterno.
+
+Non è stato osservato il riconoscimento automatico della skill o il dialogo
+vocale nell’app effettiva. Le release remote devono essere pubblicate prima
+che gli aggiornamenti dei colleghi possano scaricarle.

@@ -39,7 +39,8 @@ class InstallTests(unittest.TestCase):
     def test_update_preserves_configuration_credentials_drafts_state_and_local_rules(self):
         self.install()
         local = self.root / ".trtalks/config.local.json"
-        local.write_text('{"schema":1,"credential":"synthetic-private-test-value","send_enabled":false}\n')
+        atomic_json(local, dict(manage.DEFAULT_CONFIG, smtp_password="synthetic-private-test-value",
+                                smtp_username="local@techreloaded.it", recipient="info@techreloaded.it"))
         before = local.read_bytes()
         draft = self.root / "drafts/intervista.md"
         draft.parent.mkdir()
@@ -51,6 +52,7 @@ class InstallTests(unittest.TestCase):
         result = manage.install(self.root, self.new, self.new_sha, update=True)
         self.assertTrue(result["changed"])
         self.assertEqual(local.read_bytes(), before)
+        self.assertEqual(local.stat().st_mode & 0o777, 0o600)
         self.assertEqual(draft.read_text(), "Bozza da conservare")
         self.assertEqual(json.loads(state.read_text()), {"id": "retained"})
         self.assertEqual(override.read_text(), "Regole locali")

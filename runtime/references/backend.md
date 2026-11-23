@@ -1,64 +1,74 @@
-# Contratto HTTP verificato nei sorgenti
+# Trasporto SMTP locale
 
-Fonte: TRConversations/server, letta il 23 novembre 2026. Nessuna configurazione
-privata è stata copiata. Il contenuto del server remoto non è stato verificato.
+TRTalks invia direttamente dal computer al server SMTP, senza chiamare endpoint
+HTTP, MCP, plugin ChatGPT o Gmail. HTTP resta soltanto per scaricare gli aggiornamenti.
 
-## Servizio di prova senza email
+## Configurazione
 
-- URL: `https://techreloaded.it/shared/php/trdocument-http-test.php`.
-- GET senza autenticazione: JSON `ok:true`, `status:"ready"`,
-  `service:"trinterview-http-test"`, `email_sent:false`, `stored:false`.
-- POST `Content-Type: application/json`, nessuna autenticazione. Unici campi:
-  `request_id` con formato `probe-` seguito da 32 cifre esadecimali minuscole,
-  `markdown` UTF-8 non vuoto, massimo 8192 byte; JSON massimo 65536 byte.
-- Successo HTTP 200: `ok:true`, `status:"received"`, stesso `request_id`, stesso
-  `markdown`, `bytes`, `sha256`, identità del servizio, `email_sent:false` e
-  `stored:false`. Il client verifica tutti questi campi.
-- Errori HTTP 400/405/413/415 con `ok:false` e `error`.
-- Non salva né deduplica: `request_id` serve a correlare la risposta.
-- Il PHP non include configurazioni, non scrive file e non chiama `mail()`.
+Il file privato del progetto `.trtalks/config.local.json` contiene:
 
-## Backend operativo
-
-`https://techreloaded.it/shared/php/trdocument-mcp.php` accetta soltanto POST
-JSON-RPC 2.0. Non esiste in questo file una rotta POST REST che accetti i soli
-campi del documento. Leggere un sorgente non prova quale versione sia online.
-
-Il corpo previsto dal sorgente è un messaggio con `jsonrpc`, `id`,
-`method:"tools/call"`, `params.name:"send-document"`, `params.arguments`:
-
-| Campo arguments | Vincolo |
+| Campo | Valore iniziale |
 | --- | --- |
-| request_id | 16–80 caratteri ASCII alfanumerici, `_` o `-` |
-| approved | booleano true |
-| name | non vuoto, massimo 200 byte, nessun carattere di controllo |
-| filename | `[a-zA-Z0-9][a-zA-Z0-9_-]{0,100}.md` |
-| markdown | UTF-8 non vuoto, massimo 262144 byte, senza NUL |
-| email | facoltativa, Reply-To valido, massimo 254 byte |
+| transport | smtp |
+| smtp_host | mail.techreloaded.it |
+| smtp_port | 465 |
+| smtp_username | trtalks@techreloaded.it |
+| smtp_password | vuota; da configurare localmente |
+| smtp_from | trtalks@techreloaded.it |
+| recipient | trtalks@techreloaded.it |
+| sender_name | nome della persona che consegna il resoconto |
+| reply_to | facoltativo |
+| send_enabled | false |
 
-L'autenticazione è disabilitata intenzionalmente nel sorgente. Le credenziali
-non sono richieste a chi invia; il server usa configurazione privata e quote.
+Il destinatario è configurabile. Le installazioni precedenti mantengono il loro
+destinatario, per esempio info@techreloaded.it: leggere quello effettivo prima
+dell'autorizzazione. Un eventuale vecchio campo `endpoint` viene conservato per
+non perdere configurazione locale, ma non viene usato.
 
-L'HTTP esterno può essere 200 anche per un errore applicativo. `result.content`
-contiene JSON con `http_status` e `submission`; controllare anche `isError` e gli
-errori JSON-RPC. `http_status:202` e `status:"accepted"` significano accettazione
-da parte di `mail()` per la consegna, senza conferma di ricezione del destinatario.
-Una ripetizione già accettata restituisce stato applicativo 200 e `duplicate:true`.
+Si usa esclusivamente SMTP con TLS implicito e verifica del certificato,
+normalmente sulla porta 465. Non vengono disabilitati i controlli TLS.
+La configurazione viene scritta atomicamente con permessi 600. Se contiene una
+password ed è accessibile ad altri utenti, il runtime chiede di correggere i
+permessi prima di leggerla per l'invio. Password in chiaro nel file locale per
+scelta di configurazione: non stamparla, non copiarla nella chat, nei log, nelle
+ricevute, nelle skill o nel pacchetto. Non leggerla con strumenti che mostrano
+l'intero file. Usare `trtalks init` nel terminale per la configurazione guidata completa,
+oppure `configure --smtp-password` per cambiare soltanto la password.
 
-Il server lega l'ID al digest dell'intero payload; mantenerne esattamente campi,
-valori e presenza nei ritentativi. Un conflitto di ID restituisce 409. Gli stati
-pending/failed restituiscono `previous_attempt_requires_review`: non rigenerare
-l'ID né riprovare automaticamente. Quote 3 nuovi invii/minuto e 20/24 ore; stato
-di deduplicazione conservato per sei mesi. Non garantisce deduplicazione eterna.
+## Operazioni ed esiti
 
-`scripts/send_document.py` implementa questa POST senza configurare un client
-MCP nell'app. Non occorrono nuove rotte PHP. Il controllo `status` chiama soltanto
-`connection-status`; `send` è un'operazione distinta e richiede l'autorizzazione.
+`status` apre una connessione TLS, esegue l'autenticazione e NOOP. Non invia
+MAIL, RCPT o DATA e non spedisce email. Una verifica riuscita non prova l'arrivo
+di un'email. `probe` crea esclusivamente un documento fittizio locale senza rete.
 
-Il client congela documento, metadati, endpoint e ID prima della rete. Dopo un
-timeout conserva lo stato incerto. Un ritentativo esplicito usa esclusivamente
-il payload salvato. Non ritenta stati che richiedono revisione né tentativi più
-vecchi di 150 giorni (margine conservativo rispetto alla conservazione server).
-Un documento già accettato localmente restituisce la ricevuta senza reinvio.
-`backend_accepted:true` viene emesso solo su ricevuta valida; negli esiti incerti
-rimane `null`. `email_delivery:"unconfirmed"` non conferma l'arrivo di un'email.
+`send` salva documento, metadati, autorizzazione, Message-ID e messaggio MIME
+completo prima della rete. Spedisce una email con allegato `.md`: la codifica
+base64 conserva i byte UTF-8 autorizzati, comprese le terminazioni di riga.
+Il nome della persona compare nel mittente visualizzato; `smtp_from` resta
+l'indirizzo della casella autorizzata. `reply_to`, se presente, diventa Reply-To.
+Username e password non vengono inseriti nel messaggio; la password resta
+esclusivamente nella configurazione locale.
+
+`smtp_accepted:true` richiede la risposta SMTP 250 dopo DATA. Significa soltanto
+che il server ha accettato il messaggio; `email_delivery:"unconfirmed"` non
+conferma la ricezione nella casella destinataria. Nessuna logica dipende da
+`backend_accepted`, risposte HTTP o JSON-RPC.
+
+## Ritentativi e migrazione
+
+SMTP non offre una chiave di idempotenza. Message-ID e request_id stabili servono
+alla tracciabilità, non garantiscono che il server elimini i duplicati.
+
+- `accepted`: riusare la ricevuta locale, senza connessione o reinvio.
+- `failed_safe`: errore prima di DATA o rifiuto esplicito del messaggio. Un retry
+  può riusare lo stesso ID e gli stessi byte dopo la correzione del problema.
+- `uncertain` o `pending`: reinvio bloccato, anche con `retry`; occorre verificare
+  manualmente lo stato dell'email. Non cancellare lo stato e non creare un altro
+  ID o modificare il documento per aggirare il blocco.
+
+La password può essere corretta tra due tentativi sicuri; server, account,
+mittente e destinatario devono restare gli stessi. Le vecchie ricevute HTTP
+vengono conservate: non sono convertite in tentativi SMTP. Un documento già
+registrato nel vecchio flusso richiede revisione manuale prima di un altro invio.
+Il lock locale protegge da invii paralleli sullo stesso progetto; non deduplica
+fra computer o installazioni differenti.

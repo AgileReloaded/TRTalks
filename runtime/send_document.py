@@ -1,72 +1,60 @@
 #!/usr/bin/env python3
-"""Deliver approved Markdown via the existing HTTP JSON-RPC contract."""
+"""Deliver approved Markdown by local SMTP, retaining drafts and safe retry state."""
 import argparse
-from datetime import datetime, timezone, timedelta
+import base64
+from email import policy
+from email.message import EmailMessage
+from email.utils import formataddr, formatdate
 import json
-import os
 from pathlib import Path
 import re
 import sys
 import uuid
 
-from common import atomic_json, canonical, digest, fetch, load_config, locked, now, plain_path, response_json
+from common import atomic_json, canonical, digest, email_address, load_config, locked, now, plain_path
+from delivery import DeliveryError, smtp_transport
 
 
-def rpc_body(name, arguments, request_id):
-    return {"jsonrpc": "2.0", "id": request_id, "method": "tools/call",
-            "params": {"name": name, "arguments": arguments}}
-
-
-def rpc_result(exchange, request_id):
-    body = response_json(exchange)
-    if body.get("jsonrpc") != "2.0" or body.get("id") != request_id:
-        raise ValueError("Risposta JSON-RPC non correlata alla richiesta")
-    if "error" in body:
-        raise ValueError("Errore JSON-RPC: " + json.dumps(body["error"], ensure_ascii=False))
-    result = body.get("result")
-    if not isinstance(result, dict) or type(result.get("isError")) is not bool:
-        raise ValueError("Risultato JSON-RPC non valido")
-    blocks = result.get("content")
-    if not (isinstance(blocks, list) and len(blocks) == 1 and isinstance(blocks[0], dict)
-            and blocks[0].get("type") == "text" and isinstance(blocks[0].get("text"), str)):
-        raise ValueError("Contenuto JSON-RPC inatteso")
-    value = json.loads(blocks[0]["text"])
-    if not isinstance(value, dict):
-        raise ValueError("Ricevuta applicativa non valida")
-    return value, result["isError"]
+def route(config):
+    # Passwords stay exclusively in config.local.json; not even their hash is stored.
+    return {key: config[key] for key in
+            ("smtp_host", "smtp_port", "smtp_username", "smtp_from", "recipient")}
 
 
 def status(root, transport=None):
     config = load_config(root)
-    request_id = "status-" + uuid.uuid4().hex
-    exchange = (transport or fetch)(config["endpoint"], rpc_body("connection-status", {}, request_id))
-    receipt, failed = rpc_result(exchange, request_id)
-    return {"verified": not failed and receipt.get("ready") is True,
-            "email_delivery": "not_requested", "exchange": exchange, "receipt": receipt}
+    result = {"verified": False, "operation": "smtp-status", "transport": "smtp",
+              "smtp_host": config["smtp_host"], "smtp_port": config["smtp_port"],
+              "recipient": config["recipient"], "email_delivery": "not_requested"}
+    try:
+        receipt = (transport or smtp_transport)(config)
+        result.update(verified=receipt.get("authenticated") is True
+                      and receipt.get("smtp_code") == 250
+                      and receipt.get("email_sent") is False, receipt=receipt)
+    except DeliveryError as error:
+        result.update(error=str(error), smtp_code=error.code)
+    return result
 
 
 def validated_document(file, config, name=None, email=None):
-    file = Path(file)
-    if file.is_symlink():
+    file = plain_path(Path(file))
+    if not file.is_file():
         raise ValueError("La bozza deve essere un file regolare")
-    # A bounded read also refuses oversized documents without loading them fully.
     with file.open("rb") as stream:
         raw = stream.read(262145)
     text = raw.decode("utf-8")
     if not text.strip() or len(raw) > 262144 or b"\0" in raw:
         raise ValueError("Markdown vuoto, troppo grande o contenente NUL")
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,100}\.md", file.name):
-        raise ValueError("Nome file non valido per il backend: usare lettere, numeri, _ o - e .md")
+        raise ValueError("Nome file non valido: usare lettere, numeri, _ o - e .md")
     name = config["sender_name"] if name is None else name
     email = config["reply_to"] if email is None else email
     if (not isinstance(name, str) or not name.strip() or len(name.encode("utf-8")) > 200
             or re.search(r"[\x00-\x1f\x7f]", name)):
         raise ValueError("Nome mittente obbligatorio e valido, massimo 200 byte UTF-8")
-    if (not isinstance(email, str) or len(email.encode("utf-8")) > 254
-            or (email and not re.fullmatch(r"[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+", email))):
+    if not isinstance(email, str) or (email and not email_address(email)):
         raise ValueError("Reply-To non valido")
-    return {"approved": True, "name": name, "email": email,
-            "filename": file.name, "markdown": text}, digest(raw)
+    return {"name": name, "email": email, "filename": file.name, "markdown": text}, digest(raw)
 
 
 def dry_run(root, file, name=None, email=None):
@@ -74,75 +62,115 @@ def dry_run(root, file, name=None, email=None):
     args, sha = validated_document(file, config, name, email)
     return {"network_called": False, "email_delivery": "not_requested", "sha256": sha,
             "bytes": len(args["markdown"].encode("utf-8")), "filename": args["filename"],
-            "recipient": config["recipient"], "send_enabled": config["send_enabled"]}
+            "recipient": config["recipient"], "smtp_from": config["smtp_from"],
+            "send_enabled": config["send_enabled"], "smtp_password_configured": bool(config["smtp_password"])}
 
 
-def transmit(root, record_path, record, transport=None):
-    # Persist before network: a crash must leave an uncertain attempt, never a fresh ID.
+def probe(root):
+    """Create a fixed synthetic draft locally. Never contacts any server."""
+    target = plain_path(Path(root) / "artifacts/prova-smtp.md")
+    raw = "# Prova TRTalks\n\nDocumento fittizio per verificare il formato.\n".encode("utf-8")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with target.open("xb") as stream:
+            stream.write(raw)
+    except FileExistsError:
+        if target.read_bytes() != raw:
+            raise ValueError("Il documento di prova esiste con altro contenuto; non sovrascritto")
+    return {"verified": True, "network_called": False, "email_delivery": "not_requested",
+            "draft_path": str(target), "sha256": digest(raw), "bytes": len(raw)}
+
+
+def message_bytes(args, delivery_route, request_id, date):
+    message = EmailMessage(policy=policy.SMTP)
+    message["From"] = formataddr((args["name"], delivery_route["smtp_from"]))
+    message["To"] = delivery_route["recipient"]
+    if args["email"]:
+        message["Reply-To"] = args["email"]
+    message["Subject"] = "TRTalks — " + args["filename"]
+    message["Date"] = date
+    message["Message-ID"] = "<" + request_id + "@" + delivery_route["smtp_from"].split("@", 1)[1] + ">"
+    message["X-TRTalks-Request-ID"] = request_id
+    message.set_content("Resoconto TRTalks preparato da " + args["name"] + ".\n"
+                        "Il documento Markdown completo è allegato.\n")
+    # Base64 attachment retains the exact authorized UTF-8 bytes, including CRLF.
+    message.add_attachment(args["markdown"].encode("utf-8"), maintype="text", subtype="markdown",
+                           filename=args["filename"], cte="base64")
+    message.set_boundary("trtalks-" + request_id)
+    return message.as_bytes()
+
+
+def transmit(root, record_path, record, config, transport=None):
     record["status"] = "pending"
     record["last_attempt_at"] = now()
-    atomic_json(record_path, record)
-    outcome = {"request_id": record["request_id"], "backend_accepted": None,
-               "email_delivery": "unconfirmed", "cached": False}
+    atomic_json(record_path, record)  # Crash from here onward requires review, never a new ID.
+    outcome = {"request_id": record["request_id"], "message_id": record["message_id"],
+               "smtp_accepted": None, "email_delivery": "unconfirmed", "cached": False,
+               "recipient": record["route"]["recipient"]}
     try:
-        exchange = (transport or fetch)(record["endpoint"], record["payload"])
-        outcome["exchange"] = exchange
-        record.setdefault("attempts", []).append({"at": now(), "exchange": exchange})
-        receipt, failed = rpc_result(exchange, record["request_id"])
-        status_code = receipt.get("http_status")
-        submission = receipt.get("submission", receipt)
-        if not isinstance(submission, dict):
-            raise ValueError("Ricevuta submission non valida")
-        accepted = (not failed and type(status_code) is int and status_code in (200, 202)
-                    and submission.get("ok") is True and submission.get("status") == "accepted"
-                    and submission.get("request_id") == record["request_id"]
-                    and submission.get("recipient", "info@techreloaded.it") == "info@techreloaded.it")
-        record["status"] = "accepted" if accepted else "rejected"
-        if submission.get("error") in ("previous_attempt_requires_review", "request_id_conflict"):
-            record["status"] = "review_required"
-        if not accepted and not failed:
-            record["status"] = "uncertain"
-        outcome.update(backend_accepted=True if accepted else None,
-                       request_rejected=failed, receipt=receipt, exchange=exchange)
-    except (OSError, ValueError, TypeError) as error:
+        raw = base64.b64decode(record["message_base64"], validate=True)
+        envelope = {"from": record["route"]["smtp_from"], "to": record["route"]["recipient"]}
+        receipt = (transport or smtp_transport)(config, envelope, raw)
+        if (receipt.get("smtp_accepted") is not True or receipt.get("smtp_code") != 250
+                or receipt.get("recipient") != envelope["to"]):
+            raise DeliveryError("Ricevuta SMTP inattesa", uncertain=True)
+        record["status"] = "accepted"
+        outcome.update(smtp_accepted=True, receipt=receipt)
+    except DeliveryError as error:
+        record["status"] = "uncertain" if error.uncertain else "failed_safe"
+        outcome.update(smtp_accepted=None if error.uncertain else False,
+                       error=str(error), smtp_code=error.code,
+                       email_delivery="unconfirmed" if error.uncertain else "not_sent")
+    except (OSError, ValueError, TypeError, KeyError):
+        # Unexpected failures after entering a transport are ambiguous; no raw secrets in output.
         record["status"] = "uncertain"
-        outcome["error"] = str(error)
-        record.setdefault("attempts", []).append({"at": now(), "error": str(error)})
+        outcome["error"] = "Errore durante il tentativo SMTP; esito non determinato"
+    record.setdefault("attempts", []).append({"at": now(), "outcome": outcome})
     record["outcome"] = outcome
-    atomic_json(record_path, record)
-    return dict(outcome, local_status=record["status"], state_file=str(record_path))
+    try:
+        atomic_json(record_path, record)
+    except OSError:
+        return dict(outcome, local_status="pending", state_saved=False, state_file=str(record_path),
+                    state_error="Ricevuta non salvata: conservare questo esito e verificare manualmente; nessun reinvio")
+    return dict(outcome, local_status=record["status"], state_saved=True, state_file=str(record_path))
 
 
 def send(root, file, approved_sha256, authorization, name=None, email=None, transport=None):
     root = Path(root).resolve()
     config = load_config(root)
-    if config["send_enabled"] is not True:
-        raise ValueError("Invio disabilitato nella configurazione locale; nessuna richiesta eseguita")
+    if not config["send_enabled"]:
+        raise ValueError("Invio disabilitato nella configurazione locale")
     args, sha = validated_document(file, config, name, email)
     if approved_sha256 != sha or not authorization or not authorization.strip():
         raise ValueError("Manca l'autorizzazione esplicita o la bozza differisce dalla versione autorizzata")
-    with locked(root / ".trtalks" / "delivery.lock"):
-        directory = plain_path(root / ".trtalks" / "deliveries")
+    with locked(root / ".trtalks/delivery.lock"):
+        directory = plain_path(root / ".trtalks/deliveries")
         directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-        fingerprint = digest(canonical({"endpoint": config["endpoint"], "arguments": args}))
+        delivery_route = route(config)
+        fingerprint = digest(canonical({"route": delivery_route, "arguments": args}))
         for path in directory.glob("trtalks-*.json"):
             record = json.loads(plain_path(path).read_text(encoding="utf-8"))
             if record["document_sha256"] != sha:
                 continue
+            if record.get("transport") != "smtp":
+                raise ValueError("Documento già registrato nel precedente flusso HTTP: revisione manuale, nessun reinvio SMTP")
             if record["fingerprint"] != fingerprint:
-                raise ValueError("Documento già registrato con altri metadati: verificare prima di creare un altro invio")
+                raise ValueError("Documento già registrato con altri metadati o destinatario: verificare prima di un altro invio")
             if record["status"] == "accepted":
-                return dict(record["outcome"], cached=True, state_file=str(path))
+                return dict(record["outcome"], cached=True, local_status="accepted", state_file=str(path))
             raise ValueError("Tentativo già registrato: usare retry con lo stesso request_id " + record["request_id"])
         request_id = "trtalks-" + uuid.uuid4().hex
-        args["request_id"] = request_id
-        record = {"schema": 1, "created_at": now(), "request_id": request_id,
-                  "endpoint": config["endpoint"], "document_sha256": sha, "fingerprint": fingerprint,
+        date = formatdate(localtime=True)
+        raw = message_bytes(args, delivery_route, request_id, date)
+        record = {"schema": 2, "transport": "smtp", "created_at": now(), "request_id": request_id,
+                  "route": delivery_route, "document_sha256": sha, "fingerprint": fingerprint,
                   "authorization": authorization, "draft_path": str(Path(file).resolve()),
-                  "payload": rpc_body("send-document", args, request_id), "status": "prepared", "attempts": []}
+                  "arguments": args, "date": date, "message_id": "<" + request_id + "@" + delivery_route["smtp_from"].split("@", 1)[1] + ">",
+                  "message_base64": base64.b64encode(raw).decode("ascii"), "message_sha256": digest(raw),
+                  "status": "prepared", "attempts": []}
         path = directory / (request_id + ".json")
         atomic_json(path, record)
-        return transmit(root, path, record, transport)
+        return transmit(root, path, record, config, transport)
 
 
 def retry(root, request_id, transport=None):
@@ -152,26 +180,26 @@ def retry(root, request_id, transport=None):
     config = load_config(root)
     if not config["send_enabled"]:
         raise ValueError("Invio disabilitato")
-    with locked(root / ".trtalks" / "delivery.lock"):
-        path = plain_path(root / ".trtalks" / "deliveries" / (request_id + ".json"))
+    with locked(root / ".trtalks/delivery.lock"):
+        path = plain_path(root / ".trtalks/deliveries" / (request_id + ".json"))
         record = json.loads(path.read_text(encoding="utf-8"))
+        if record.get("transport") != "smtp":
+            raise ValueError("Tentativo del precedente flusso HTTP: revisione manuale, nessun reinvio SMTP")
         if record["status"] == "accepted":
-            return dict(record["outcome"], cached=True, state_file=str(path))
-        if record["status"] == "review_required":
-            raise ValueError("Il backend richiede revisione: nessun nuovo tentativo automatico")
-        if datetime.now(timezone.utc) - datetime.fromisoformat(record["created_at"]) > timedelta(days=150):
-            raise ValueError("Tentativo troppo vecchio per affidarsi alla deduplicazione del backend")
-        if config["endpoint"] != record["endpoint"]:
-            raise ValueError("Endpoint cambiato: ritentativo bloccato")
-        args = dict(record["payload"]["params"]["arguments"])
-        if args.pop("request_id") != request_id or digest(args["markdown"].encode("utf-8")) != record["document_sha256"]:
-            raise ValueError("Stato del tentativo corrotto")
-        if digest(canonical({"endpoint": record["endpoint"], "arguments": args})) != record["fingerprint"]:
-            raise ValueError("Payload salvato modificato")
-        frozen_args = dict(args, request_id=request_id)
-        if record["payload"] != rpc_body("send-document", frozen_args, request_id):
-            raise ValueError("Messaggio JSON-RPC salvato modificato")
-        return transmit(root, path, record, transport)
+            return dict(record["outcome"], cached=True, local_status="accepted", state_file=str(path))
+        if record["status"] != "failed_safe":
+            raise ValueError("Esito incerto o tentativo interrotto: SMTP non deduplica; reinvio bloccato, verificare manualmente")
+        if route(config) != record["route"]:
+            raise ValueError("Server, account, mittente o destinatario cambiati: ritentativo bloccato")
+        args = record["arguments"]
+        raw = base64.b64decode(record["message_base64"], validate=True)
+        if (record["request_id"] != request_id or not record.get("authorization")
+                or digest(args["markdown"].encode("utf-8")) != record["document_sha256"]
+                or digest(canonical({"route": record["route"], "arguments": args})) != record["fingerprint"]
+                or digest(raw) != record["message_sha256"]
+                or raw != message_bytes(args, record["route"], request_id, record["date"])):
+            raise ValueError("Stato del tentativo modificato: nessun reinvio")
+        return transmit(root, path, record, config, transport)
 
 
 def main(argv=None):
@@ -179,6 +207,7 @@ def main(argv=None):
     parser.add_argument("--root", type=Path, default=Path.cwd())
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("status")
+    commands.add_parser("probe")
     for command in ("dry-run", "send"):
         part = commands.add_parser(command)
         part.add_argument("file", type=Path)
@@ -192,6 +221,8 @@ def main(argv=None):
     try:
         if args.command == "status":
             result = status(args.root)
+        elif args.command == "probe":
+            result = probe(args.root)
         elif args.command == "dry-run":
             result = dry_run(args.root, args.file, args.name, args.email)
         elif args.command == "send":
@@ -199,9 +230,11 @@ def main(argv=None):
         else:
             result = retry(args.root, args.request_id)
         print(json.dumps(result, ensure_ascii=False, indent=2))
-        return 0 if result.get("backend_accepted", result.get("verified", result.get("network_called") is False)) else 1
+        success = result.get("smtp_accepted", result.get("verified", result.get("network_called") is False))
+        return 0 if success and result.get("state_saved", True) else 1
     except (OSError, ValueError, KeyError, TypeError) as error:
-        print(json.dumps({"ok": False, "error": str(error), "email_delivery": "unconfirmed"}, ensure_ascii=False))
+        delivery = "unconfirmed" if args.command in ("send", "retry") else "not_requested"
+        print(json.dumps({"ok": False, "error": str(error), "email_delivery": delivery}, ensure_ascii=False))
         return 1
 
 
